@@ -78,6 +78,7 @@ struct App {
     input_cursor: usize,
     running_task: Option<JoinHandle<Result<CommandResult>>>,
     running_child: Arc<Mutex<Option<Child>>>,
+    input_focused: bool,
 }
 
 struct CommandResult {
@@ -119,6 +120,7 @@ impl App {
             input_cursor,
             running_task: None,
             running_child: Arc::new(Mutex::new(None)),
+            input_focused: false,
         }
     }
 
@@ -469,18 +471,30 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
     frame.render_widget(output_panel, output_area);
 
-    // Input field
+    // Input field with focus indicator
     let input_text = &app.command_inputs[selected_idx];
+    let (input_style, input_title) = if app.input_focused {
+        (Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD), "Command [EDITING]")
+    } else {
+        (Style::default().fg(Color::DarkGray), "Command")
+    };
     let input = Paragraph::new(input_text.as_str())
-        .block(Block::default().borders(Borders::ALL).title("Command"))
-        .style(Style::default().fg(Color::Yellow));
+        .block(Block::default().borders(Borders::ALL).title(input_title))
+        .style(input_style);
     frame.render_widget(input, chunks[2]);
 
-    // Set cursor position in the input field
-    frame.set_cursor_position((chunks[2].x + app.input_cursor as u16 + 1, chunks[2].y + 1));
+    // Set cursor position in the input field (only visible when focused)
+    if app.input_focused {
+        frame.set_cursor_position((chunks[2].x + app.input_cursor as u16 + 1, chunks[2].y + 1));
+    }
 
-    // Footer
-    let footer = Paragraph::new("Ctrl+C: Quit | Enter: Run | Ctrl+R: Re-run | Alt+1-9: Switch tab | PgUp/PgDn: Scroll | ←/→/Home/End: Edit")
+    // Footer with mode-specific shortcuts
+    let footer_text = if app.input_focused {
+        "Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit"
+    } else {
+        "q/Esc: Quit | i: Edit command | Enter/r: Run | 1-9: Switch tab | j/k/↑/↓: Navigate | PgUp/PgDn: Scroll"
+    };
+    let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default().fg(Color::Gray));
     frame.render_widget(footer, chunks[3]);
@@ -501,41 +515,64 @@ async fn run_app<B: ratatui::backend::Backend>(
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            // Kill running task if any
-                            app.cancel_running_command();
-                            return Ok(())
-                        }
-                        KeyCode::Down if key.modifiers.is_empty() => app.next(),
-                        KeyCode::Up if key.modifiers.is_empty() => app.previous(),
-                        KeyCode::Enter => {
-                            app.start_command();
-                        }
-                        KeyCode::Char('r') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            app.start_command();
-                        }
-                        KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                            let idx = c.to_digit(10).unwrap() as usize - 1;
-                            app.switch_to_tab(idx);
-                        }
-                        KeyCode::PageUp => {
-                            for _ in 0..10 {
-                                app.scroll_up();
+                    // Ctrl+C always quits
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                        app.cancel_running_command();
+                        return Ok(());
+                    }
+
+                    if app.input_focused {
+                        // FOCUSED MODE - editing command input
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.input_focused = false;
                             }
-                        }
-                        KeyCode::PageDown => {
-                            for _ in 0..10 {
-                                app.scroll_down();
+                            KeyCode::Enter => {
+                                app.input_focused = false;
+                                app.start_command();
                             }
+                            KeyCode::Backspace => app.input_delete_char(),
+                            KeyCode::Left => app.input_move_cursor_left(),
+                            KeyCode::Right => app.input_move_cursor_right(),
+                            KeyCode::Home => app.input_move_cursor_home(),
+                            KeyCode::End => app.input_move_cursor_end(),
+                            KeyCode::Char(c) => app.input_insert_char(c),
+                            _ => {}
                         }
-                        KeyCode::Backspace => app.input_delete_char(),
-                        KeyCode::Left => app.input_move_cursor_left(),
-                        KeyCode::Right => app.input_move_cursor_right(),
-                        KeyCode::Home => app.input_move_cursor_home(),
-                        KeyCode::End => app.input_move_cursor_end(),
-                        KeyCode::Char(c) => app.input_insert_char(c),
-                        _ => {}
+                    } else {
+                        // UNFOCUSED MODE - navigation
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                app.cancel_running_command();
+                                return Ok(());
+                            }
+                            KeyCode::Char('i') => {
+                                app.input_focused = true;
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => app.next(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                            KeyCode::Enter => {
+                                app.start_command();
+                            }
+                            KeyCode::Char('r') => {
+                                app.start_command();
+                            }
+                            KeyCode::Char(c @ '1'..='9') => {
+                                let idx = c.to_digit(10).unwrap() as usize - 1;
+                                app.switch_to_tab(idx);
+                            }
+                            KeyCode::PageUp => {
+                                for _ in 0..10 {
+                                    app.scroll_up();
+                                }
+                            }
+                            KeyCode::PageDown => {
+                                for _ in 0..10 {
+                                    app.scroll_down();
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
