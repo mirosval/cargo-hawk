@@ -1,3 +1,4 @@
+use ansi_to_tui::IntoText;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
@@ -6,7 +7,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use ansi_to_tui::IntoText;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -25,6 +25,8 @@ use std::{
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+const CUSTOM_COMMAND_PLACEHOLDER: &str = "<custom command>";
 
 #[derive(Parser, Debug)]
 #[command(name = "cargo-hawk")]
@@ -57,12 +59,18 @@ enum CargoCommand {
 impl CargoCommand {
     fn as_display(&self) -> &str {
         match self {
-            CargoCommand::Check => "cargo check",
-            CargoCommand::Build => "cargo build",
-            CargoCommand::Run => "cargo run",
-            CargoCommand::Test => "cargo test",
-            CargoCommand::Clippy => "cargo clippy",
-            CargoCommand::Custom(cmd) => cmd,
+            CargoCommand::Check => "check",
+            CargoCommand::Build => "build",
+            CargoCommand::Run => "run",
+            CargoCommand::Test => "test",
+            CargoCommand::Clippy => "clippy",
+            CargoCommand::Custom(cmd) => {
+                if cmd.is_empty() {
+                    CUSTOM_COMMAND_PLACEHOLDER
+                } else {
+                    cmd
+                }
+            }
         }
     }
 }
@@ -96,6 +104,7 @@ impl App {
             CargoCommand::Run,
             CargoCommand::Test,
             CargoCommand::Clippy,
+            CargoCommand::Custom("".to_string()),
         ];
 
         if let Some(cmd) = custom_command {
@@ -106,7 +115,10 @@ impl App {
         selected.select(Some(0));
 
         // Initialize command inputs with default command strings
-        let command_inputs: Vec<String> = commands.iter().map(|c| c.as_display().to_string()).collect();
+        let command_inputs: Vec<String> = commands
+            .iter()
+            .map(|c| format!("cargo {}", c.as_display()))
+            .collect();
         let input_cursor = command_inputs[0].len();
 
         Self {
@@ -246,8 +258,11 @@ impl App {
         self.add_output(String::new());
 
         // Parse the command string into program and args
-        let parts: Vec<String> = command_str.split_whitespace().map(|s| s.to_string()).collect();
-        if parts.is_empty() {
+        let parts: Vec<String> = command_str
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        if parts.is_empty() || command_str.contains(CUSTOM_COMMAND_PLACEHOLDER) {
             self.add_output("Error: Empty command".to_string());
             self.running = false;
             return;
@@ -404,8 +419,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     }
 
     let tab_line = Line::from(tab_spans);
-    let tabs_widget = Paragraph::new(tab_line)
-        .style(Style::default().bg(Color::DarkGray));
+    let tabs_widget = Paragraph::new(tab_line).style(Style::default().bg(Color::DarkGray));
     frame.render_widget(tabs_widget, chunks[0]);
 
     // Render "Cargo Hawk" on the right side of the same line
@@ -417,14 +431,13 @@ fn ui(frame: &mut Frame, app: &mut App) {
         width: title_text.len() as u16,
         height: 1,
     };
-    let title = Paragraph::new(title_text)
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+    let title =
+        Paragraph::new(title_text).style(Style::default().fg(Color::White).bg(Color::DarkGray));
     frame.render_widget(title, title_area);
 
     // Colored separator line using upper half block character (▀) to touch the tab bar
     let separator_line = "▀".repeat(chunks[1].width as usize);
-    let separator = Paragraph::new(separator_line)
-        .style(Style::default().fg(selected_color));
+    let separator = Paragraph::new(separator_line).style(Style::default().fg(selected_color));
     let separator_area = ratatui::layout::Rect {
         x: chunks[1].x,
         y: chunks[0].y + chunks[0].height,
@@ -442,7 +455,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
     };
 
     let output_height = output_area.height as usize;
-    let start_line = app.scroll_offset.min(app.output.len().saturating_sub(output_height));
+    let start_line = app
+        .scroll_offset
+        .min(app.output.len().saturating_sub(output_height));
     let end_line = (start_line + output_height).min(app.output.len());
 
     // Parse ANSI color codes in the output
@@ -459,7 +474,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
                         text.lines[0].clone()
                     }
                 }
-                Err(_) => Line::from(line.clone())
+                Err(_) => Line::from(line.clone()),
             }
         })
         .collect();
@@ -474,7 +489,12 @@ fn ui(frame: &mut Frame, app: &mut App) {
     // Input field with focus indicator
     let input_text = &app.command_inputs[selected_idx];
     let (input_style, input_title) = if app.input_focused {
-        (Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD), "Command [EDITING]")
+        (
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            "Command [EDITING]",
+        )
     } else {
         (Style::default().fg(Color::DarkGray), "Command")
     };
@@ -516,7 +536,11 @@ async fn run_app<B: ratatui::backend::Backend>(
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     // Ctrl+C always quits
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
                         app.cancel_running_command();
                         return Ok(());
                     }
@@ -616,11 +640,7 @@ struct TerminalCleanup;
 impl Drop for TerminalCleanup {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        );
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
     }
 }
 
