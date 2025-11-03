@@ -6,13 +6,13 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use strip_ansi_escapes::strip;
+use ansi_to_tui::IntoText;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    text::Line,
-    widgets::{Block, Borders, ListState, Paragraph, Tabs, Wrap},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::{
@@ -284,12 +284,9 @@ impl App {
 
             // Child handle is already cleared by the take() above
 
-            // Strip ANSI escape sequences from output
-            let stdout_stripped = strip(&output.stdout);
-            let stderr_stripped = strip(&output.stderr);
-
-            let stdout = String::from_utf8_lossy(&stdout_stripped).to_string();
-            let stderr = String::from_utf8_lossy(&stderr_stripped).to_string();
+            // Keep ANSI color codes in the output for colored display
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
             Ok(CommandResult {
                 stdout,
@@ -362,54 +359,115 @@ impl App {
     }
 }
 
+fn get_tab_color(idx: usize) -> Color {
+    let colors = [
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Blue,
+        Color::Red,
+    ];
+    colors[idx % colors.len()]
+}
+
 fn ui(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(10),
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
-    // Tab bar showing commands
+    // Top line: tabs on left, "Cargo Hawk" on right, with dark background
     let selected_idx = app.selected.selected().unwrap_or(0);
-    let tab_titles: Vec<String> = app.commands
-        .iter()
-        .enumerate()
-        .map(|(idx, cmd)| format!(" {} {} ", idx + 1, cmd.as_display()))
-        .collect();
+    let selected_color = get_tab_color(selected_idx);
 
-    let tabs = Tabs::new(tab_titles)
-        .block(Block::default().borders(Borders::NONE).title("Cargo Hawk"))
-        .select(selected_idx)
-        .style(Style::default().fg(Color::White))
-        .highlight_style(Style::default().fg(Color::Yellow));
-    frame.render_widget(tabs, chunks[0]);
+    let mut tab_spans = vec![];
+    for (idx, cmd) in app.commands.iter().enumerate() {
+        let tab_text = format!(" {} {} ", idx + 1, cmd.as_display());
+        let tab_color = get_tab_color(idx);
+        let style = if idx == selected_idx {
+            Style::default()
+                .fg(Color::Black)
+                .bg(tab_color)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(tab_color).bg(Color::DarkGray)
+        };
+        tab_spans.push(Span::styled(tab_text, style));
+    }
 
-    // Output panel (now full width)
-    let output_height = chunks[1].height.saturating_sub(2) as usize;
+    let tab_line = Line::from(tab_spans);
+    let tabs_widget = Paragraph::new(tab_line)
+        .style(Style::default().bg(Color::DarkGray));
+    frame.render_widget(tabs_widget, chunks[0]);
+
+    // Render "Cargo Hawk" on the right side of the same line
+    let title_text = "Cargo Hawk";
+    let title_x = chunks[0].width.saturating_sub(title_text.len() as u16);
+    let title_area = ratatui::layout::Rect {
+        x: chunks[0].x + title_x,
+        y: chunks[0].y,
+        width: title_text.len() as u16,
+        height: 1,
+    };
+    let title = Paragraph::new(title_text)
+        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+    frame.render_widget(title, title_area);
+
+    // Colored separator line using upper half block character (▀) to touch the tab bar
+    let separator_line = "▀".repeat(chunks[1].width as usize);
+    let separator = Paragraph::new(separator_line)
+        .style(Style::default().fg(selected_color));
+    let separator_area = ratatui::layout::Rect {
+        x: chunks[1].x,
+        y: chunks[0].y + chunks[0].height,
+        width: chunks[1].width,
+        height: 1,
+    };
+    frame.render_widget(separator, separator_area);
+
+    // Output panel - positioned right after separator
+    let output_area = ratatui::layout::Rect {
+        x: chunks[1].x,
+        y: chunks[0].y + chunks[0].height + 1,
+        width: chunks[1].width,
+        height: chunks[1].height.saturating_sub(1),
+    };
+
+    let output_height = output_area.height as usize;
     let start_line = app.scroll_offset.min(app.output.len().saturating_sub(output_height));
     let end_line = (start_line + output_height).min(app.output.len());
 
+    // Parse ANSI color codes in the output
     let visible_output: Vec<Line> = app.output[start_line..end_line]
         .iter()
-        .map(|line| Line::from(line.clone()))
+        .map(|line| {
+            // Parse ANSI codes and convert to styled text
+            match line.as_bytes().into_text() {
+                Ok(text) => {
+                    // Extract the first line from the parsed text
+                    if text.lines.is_empty() {
+                        Line::from("")
+                    } else {
+                        text.lines[0].clone()
+                    }
+                }
+                Err(_) => Line::from(line.clone())
+            }
+        })
         .collect();
 
-    let status_indicator = if app.running { " [RUNNING]" } else { "" };
-
     let output_panel = Paragraph::new(visible_output)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Output{}", status_indicator)),
-        )
+        .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: false })
         .scroll((0, 0));
 
-    frame.render_widget(output_panel, chunks[1]);
+    frame.render_widget(output_panel, output_area);
 
     // Input field
     let input_text = &app.command_inputs[selected_idx];
@@ -423,7 +481,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
     // Footer
     let footer = Paragraph::new("Ctrl+C: Quit | Enter: Run | Ctrl+R: Re-run | Alt+1-9: Switch tab | PgUp/PgDn: Scroll | ←/→/Home/End: Edit")
-        .block(Block::default().borders(Borders::ALL))
+        .block(Block::default().borders(Borders::NONE))
         .style(Style::default().fg(Color::Gray));
     frame.render_widget(footer, chunks[3]);
 }
