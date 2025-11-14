@@ -12,7 +12,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,10 @@ struct App {
     cargo_messages: Vec<CargoMessage>,
     first_diagnostic_shown: bool,
     auto_mode: bool,
+    plan_editing: bool,
+    plan_edit_text: Vec<String>,
+    plan_edit_cursor_line: usize,
+    plan_edit_cursor_col: usize,
 }
 
 struct CommandResult {
@@ -232,6 +236,10 @@ impl App {
             cargo_messages: Vec::new(),
             first_diagnostic_shown: false,
             auto_mode: true,
+            plan_editing: false,
+            plan_edit_text: Vec::new(),
+            plan_edit_cursor_line: 0,
+            plan_edit_cursor_col: 0,
         }
     }
 
@@ -365,6 +373,143 @@ impl App {
             self.selected.select(Some(idx));
             self.update_cursor_for_current_input();
             self.start_command();
+        }
+    }
+
+    fn start_plan_editing(&mut self) {
+        let selected_idx = self.selected.selected().unwrap_or(0);
+        if let Some((plan_idx, _)) = self.get_plan_and_step_index(selected_idx) {
+            // Extract commands from current plan
+            self.plan_edit_text = self.plans[plan_idx]
+                .commands
+                .iter()
+                .map(|step| step.cmd.clone())
+                .collect();
+            self.plan_edit_cursor_line = 0;
+            self.plan_edit_cursor_col = if !self.plan_edit_text.is_empty() {
+                self.plan_edit_text[0].len()
+            } else {
+                0
+            };
+            self.plan_editing = true;
+        }
+    }
+
+    fn save_plan_edits(&mut self) {
+        let selected_idx = self.selected.selected().unwrap_or(0);
+        if let Some((plan_idx, _)) = self.get_plan_and_step_index(selected_idx) {
+            // Parse edited text into new PlanSteps
+            let new_steps: Vec<PlanStep> = self
+                .plan_edit_text
+                .iter()
+                .filter(|line| !line.trim().is_empty())
+                .map(|cmd| {
+                    // Extract name from command (word after "cargo" if present)
+                    let name = cmd
+                        .strip_prefix("cargo ")
+                        .and_then(|s| s.split_whitespace().next())
+                        .unwrap_or("custom")
+                        .to_string();
+
+                    PlanStep {
+                        name,
+                        cmd: cmd.clone(),
+                        status: Status::NotRun,
+                    }
+                })
+                .collect();
+
+            // Update the plan
+            if !new_steps.is_empty() {
+                self.plans[plan_idx].commands = new_steps;
+
+                // Rebuild command_inputs for all plans
+                self.command_inputs = self
+                    .plans
+                    .iter()
+                    .flat_map(|p| p.commands.iter().map(|step| step.cmd.clone()))
+                    .collect();
+
+                // Reset selection to first step of this plan
+                if let Some(first_step_idx) = self.get_first_step_in_plan() {
+                    self.selected.select(Some(first_step_idx));
+                    self.update_cursor_for_current_input();
+
+                    // If auto mode is on, start running from the first step
+                    if self.auto_mode {
+                        self.plan_editing = false;
+                        self.start_command();
+                        return;
+                    }
+                }
+            }
+        }
+        self.plan_editing = false;
+    }
+
+    fn cancel_plan_editing(&mut self) {
+        self.plan_editing = false;
+        self.plan_edit_text.clear();
+    }
+
+    fn plan_edit_insert_char(&mut self, c: char) {
+        if self.plan_edit_text.is_empty() {
+            self.plan_edit_text.push(String::new());
+        }
+        let line = &mut self.plan_edit_text[self.plan_edit_cursor_line];
+        line.insert(self.plan_edit_cursor_col, c);
+        self.plan_edit_cursor_col += 1;
+    }
+
+    fn plan_edit_delete_char(&mut self) {
+        if self.plan_edit_cursor_col > 0 {
+            let line = &mut self.plan_edit_text[self.plan_edit_cursor_line];
+            line.remove(self.plan_edit_cursor_col - 1);
+            self.plan_edit_cursor_col -= 1;
+        } else if self.plan_edit_cursor_line > 0 {
+            // Join with previous line
+            let current_line = self.plan_edit_text.remove(self.plan_edit_cursor_line);
+            self.plan_edit_cursor_line -= 1;
+            self.plan_edit_cursor_col = self.plan_edit_text[self.plan_edit_cursor_line].len();
+            self.plan_edit_text[self.plan_edit_cursor_line].push_str(&current_line);
+        }
+    }
+
+    fn plan_edit_newline(&mut self) {
+        let current_line = &self.plan_edit_text[self.plan_edit_cursor_line];
+        let after_cursor = current_line[self.plan_edit_cursor_col..].to_string();
+        self.plan_edit_text[self.plan_edit_cursor_line].truncate(self.plan_edit_cursor_col);
+        self.plan_edit_cursor_line += 1;
+        self.plan_edit_text.insert(self.plan_edit_cursor_line, after_cursor);
+        self.plan_edit_cursor_col = 0;
+    }
+
+    fn plan_edit_move_up(&mut self) {
+        if self.plan_edit_cursor_line > 0 {
+            self.plan_edit_cursor_line -= 1;
+            let line_len = self.plan_edit_text[self.plan_edit_cursor_line].len();
+            self.plan_edit_cursor_col = self.plan_edit_cursor_col.min(line_len);
+        }
+    }
+
+    fn plan_edit_move_down(&mut self) {
+        if self.plan_edit_cursor_line + 1 < self.plan_edit_text.len() {
+            self.plan_edit_cursor_line += 1;
+            let line_len = self.plan_edit_text[self.plan_edit_cursor_line].len();
+            self.plan_edit_cursor_col = self.plan_edit_cursor_col.min(line_len);
+        }
+    }
+
+    fn plan_edit_move_left(&mut self) {
+        if self.plan_edit_cursor_col > 0 {
+            self.plan_edit_cursor_col -= 1;
+        }
+    }
+
+    fn plan_edit_move_right(&mut self) {
+        let line_len = self.plan_edit_text[self.plan_edit_cursor_line].len();
+        if self.plan_edit_cursor_col < line_len {
+            self.plan_edit_cursor_col += 1;
         }
     }
 
@@ -879,12 +1024,82 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let footer_text = if app.input_focused {
         "Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit"
     } else {
-        "q/Esc: Quit | i: Edit command | Enter/r: Run | a: Toggle auto | 1-9: Switch tab | j/k/↑/↓: Scroll"
+        "q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Toggle auto | 1-9: Switch tab | j/k/↑/↓: Scroll"
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default().fg(Color::Gray));
     frame.render_widget(footer, chunks[3]);
+
+    // Render plan editing modal if active
+    if app.plan_editing {
+        let area = frame.area();
+
+        // Calculate 80% of screen dimensions
+        let modal_width = (area.width as f32 * 0.8) as u16;
+        let modal_height = (area.height as f32 * 0.8) as u16;
+        let modal_x = (area.width - modal_width) / 2;
+        let modal_y = (area.height - modal_height) / 2;
+
+        let modal_area = ratatui::layout::Rect {
+            x: modal_x,
+            y: modal_y,
+            width: modal_width,
+            height: modal_height,
+        };
+
+        // Clear the background area to prevent transparency
+        frame.render_widget(Clear, modal_area);
+
+        // Render modal background/border
+        let modal_block = Block::default()
+            .title("Edit Plan")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .style(Style::default().bg(Color::Black));
+
+        // Get inner area for text
+        let inner_area = modal_block.inner(modal_area);
+        frame.render_widget(modal_block, modal_area);
+
+        // Render text content
+        let text_lines: Vec<Line> = app
+            .plan_edit_text
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let style = if i == app.plan_edit_cursor_line {
+                    Style::default().fg(Color::White).bg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(Span::styled(line.clone(), style))
+            })
+            .collect();
+
+        let text_widget = Paragraph::new(text_lines)
+            .block(Block::default().borders(Borders::NONE))
+            .wrap(Wrap { trim: false });
+
+        frame.render_widget(text_widget, inner_area);
+
+        // Set cursor position
+        let cursor_x = inner_area.x + app.plan_edit_cursor_col as u16;
+        let cursor_y = inner_area.y + app.plan_edit_cursor_line as u16;
+        frame.set_cursor_position((cursor_x, cursor_y));
+
+        // Render help text at bottom of modal
+        let help_text = "Ctrl+S: Save | Esc: Cancel";
+        let help_area = ratatui::layout::Rect {
+            x: modal_area.x + 2,
+            y: modal_area.y + modal_area.height - 2,
+            width: modal_area.width - 4,
+            height: 1,
+        };
+        let help_widget = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::Gray));
+        frame.render_widget(help_widget, help_area);
+    }
 }
 
 async fn run_app<B: ratatui::backend::Backend>(
@@ -912,7 +1127,39 @@ async fn run_app<B: ratatui::backend::Backend>(
                         return Ok(());
                     }
 
-                    if app.input_focused {
+                    if app.plan_editing {
+                        // PLAN EDITING MODE
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.cancel_plan_editing();
+                            }
+                            KeyCode::Char('s') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                app.save_plan_edits();
+                            }
+                            KeyCode::Enter => {
+                                app.plan_edit_newline();
+                            }
+                            KeyCode::Backspace => {
+                                app.plan_edit_delete_char();
+                            }
+                            KeyCode::Up => {
+                                app.plan_edit_move_up();
+                            }
+                            KeyCode::Down => {
+                                app.plan_edit_move_down();
+                            }
+                            KeyCode::Left => {
+                                app.plan_edit_move_left();
+                            }
+                            KeyCode::Right => {
+                                app.plan_edit_move_right();
+                            }
+                            KeyCode::Char(c) => {
+                                app.plan_edit_insert_char(c);
+                            }
+                            _ => {}
+                        }
+                    } else if app.input_focused {
                         // FOCUSED MODE - editing command input
                         match key.code {
                             KeyCode::Esc => {
@@ -953,6 +1200,9 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     }
                                     // Note: auto mode stays on even if all steps are already successful
                                 }
+                            }
+                            KeyCode::Char('p') => {
+                                app.start_plan_editing();
                             }
                             KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                             KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
