@@ -480,7 +480,8 @@ impl App {
         let after_cursor = current_line[self.plan_edit_cursor_col..].to_string();
         self.plan_edit_text[self.plan_edit_cursor_line].truncate(self.plan_edit_cursor_col);
         self.plan_edit_cursor_line += 1;
-        self.plan_edit_text.insert(self.plan_edit_cursor_line, after_cursor);
+        self.plan_edit_text
+            .insert(self.plan_edit_cursor_line, after_cursor);
         self.plan_edit_cursor_col = 0;
     }
 
@@ -899,10 +900,10 @@ fn ui(frame: &mut Frame, app: &mut App) {
     // Add auto mode indicator if enabled
     if app.auto_mode {
         tab_spans.push(Span::styled(
-            " [AUTO] ",
+            " » ",
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Yellow)
+                .bg(Color::Red)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -1024,7 +1025,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let footer_text = if app.input_focused {
         "Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit"
     } else {
-        "q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Toggle auto | 1-9: Switch tab | j/k/↑/↓: Scroll"
+        "q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Auto advance | 1-9: Switch tab | j/k/↑/↓: Scroll"
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::NONE))
@@ -1096,8 +1097,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
             width: modal_area.width - 4,
             height: 1,
         };
-        let help_widget = Paragraph::new(help_text)
-            .style(Style::default().fg(Color::Gray));
+        let help_widget = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
         frame.render_widget(help_widget, help_area);
     }
 }
@@ -1133,7 +1133,11 @@ async fn run_app<B: ratatui::backend::Backend>(
                             KeyCode::Esc => {
                                 app.cancel_plan_editing();
                             }
-                            KeyCode::Char('s') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            KeyCode::Char('s')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
                                 app.save_plan_edits();
                             }
                             KeyCode::Enter => {
