@@ -48,12 +48,29 @@ enum AppEvent {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct CargoCommand {
+enum Status {
+    NotRun,
+    Running,
+    Warning,
+    Failure,
+    Success,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PlanStep {
+    name: String,
     cmd: String,
+    status: Status,
+}
+
+#[derive(Debug, Clone)]
+struct Plan {
+    name: String,
+    commands: Vec<PlanStep>,
 }
 
 struct App {
-    commands: Vec<CargoCommand>,
+    plans: Vec<Plan>,
     selected: ListState,
     output: Vec<String>,
     last_file_changed: Option<String>,
@@ -145,31 +162,61 @@ struct Target {
 
 impl App {
     fn new(custom_command: Option<String>) -> Self {
-        let mut commands = vec![
-            CargoCommand { cmd: "cargo check".to_string() },
-            CargoCommand { cmd: "cargo build".to_string() },
-            CargoCommand { cmd: "cargo run".to_string() },
-            CargoCommand { cmd: "cargo test".to_string() },
-            CargoCommand { cmd: "cargo clippy".to_string() },
-            CargoCommand { cmd: CUSTOM_COMMAND_PLACEHOLDER.to_string() },
-        ];
+        let mut plans = vec![Plan {
+            name: "default".to_string(),
+            commands: vec![
+                PlanStep {
+                    name: "check".to_string(),
+                    cmd: "cargo check".to_string(),
+                    status: Status::NotRun,
+                },
+                PlanStep {
+                    name: "test".to_string(),
+                    cmd: "cargo test".to_string(),
+                    status: Status::NotRun,
+                },
+                PlanStep {
+                    name: "clippy".to_string(),
+                    cmd: "cargo clippy".to_string(),
+                    status: Status::NotRun,
+                },
+            ],
+        }];
 
         if let Some(cmd) = custom_command {
-            commands.push(CargoCommand { cmd });
+            // Extract name from command (word after "cargo" if present)
+            let name = cmd
+                .strip_prefix("cargo ")
+                .and_then(|s| s.split_whitespace().next())
+                .unwrap_or("custom")
+                .to_string();
+
+            plans.push(Plan {
+                name: "custom".to_string(),
+                commands: vec![PlanStep {
+                    name,
+                    cmd,
+                    status: Status::NotRun,
+                }],
+            });
         }
 
         let mut selected = ListState::default();
         selected.select(Some(0));
 
-        // Initialize command inputs from the command strings
-        let command_inputs: Vec<String> = commands
+        // Initialize command inputs from all plan steps (flattened)
+        let command_inputs: Vec<String> = plans
             .iter()
-            .map(|c| c.cmd.clone())
+            .flat_map(|p| p.commands.iter().map(|step| step.cmd.clone()))
             .collect();
-        let input_cursor = command_inputs[0].len();
+        let input_cursor = if !command_inputs.is_empty() {
+            command_inputs[0].len()
+        } else {
+            0
+        };
 
         Self {
-            commands,
+            plans,
             selected,
             output: vec!["Watching for file changes...".to_string()],
             last_file_changed: None,
@@ -184,16 +231,17 @@ impl App {
         }
     }
 
+    fn total_steps(&self) -> usize {
+        self.plans.iter().map(|p| p.commands.len()).sum()
+    }
+
     fn next(&mut self) {
         if self.running {
             return;
         }
         let current = self.selected.selected().unwrap_or(0);
-        let i = if current >= self.commands.len() - 1 {
-            0
-        } else {
-            current + 1
-        };
+        let total = self.total_steps();
+        let i = if current >= total - 1 { 0 } else { current + 1 };
         self.selected.select(Some(i));
         self.update_cursor_for_current_input();
         self.start_command();
@@ -204,18 +252,15 @@ impl App {
             return;
         }
         let current = self.selected.selected().unwrap_or(0);
-        let i = if current == 0 {
-            self.commands.len() - 1
-        } else {
-            current - 1
-        };
+        let total = self.total_steps();
+        let i = if current == 0 { total - 1 } else { current - 1 };
         self.selected.select(Some(i));
         self.update_cursor_for_current_input();
         self.start_command();
     }
 
     fn switch_to_tab(&mut self, idx: usize) {
-        if !self.running && idx < self.commands.len() {
+        if !self.running && idx < self.total_steps() {
             self.selected.select(Some(idx));
             self.update_cursor_for_current_input();
             self.start_command();
@@ -527,20 +572,22 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let selected_color = get_tab_color(selected_idx);
 
     let mut tab_spans = vec![];
-    for (idx, cmd) in app.commands.iter().enumerate() {
-        // Display shortened command (strip "cargo " prefix if present)
-        let display_text = cmd.cmd.strip_prefix("cargo ").unwrap_or(&cmd.cmd);
-        let tab_text = format!(" {} {} ", idx + 1, display_text);
-        let tab_color = get_tab_color(idx);
-        let style = if idx == selected_idx {
-            Style::default()
-                .fg(Color::Black)
-                .bg(tab_color)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(tab_color).bg(Color::DarkGray)
-        };
-        tab_spans.push(Span::styled(tab_text, style));
+    let mut step_idx = 0;
+    for plan in &app.plans {
+        for step in &plan.commands {
+            let tab_text = format!(" {} {} ", step_idx + 1, step.name);
+            let tab_color = get_tab_color(step_idx);
+            let style = if step_idx == selected_idx {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(tab_color)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(tab_color).bg(Color::DarkGray)
+            };
+            tab_spans.push(Span::styled(tab_text, style));
+            step_idx += 1;
+        }
     }
 
     let tab_line = Line::from(tab_spans);
@@ -637,7 +684,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let footer_text = if app.input_focused {
         "Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit"
     } else {
-        "q/Esc: Quit | i: Edit command | Enter/r: Run | 1-9: Switch tab | j/k/↑/↓: Navigate | PgUp/PgDn: Scroll"
+        "q/Esc: Quit | i: Edit command | Enter/r: Run | 1-9: Switch tab | j/k/↑/↓: Scroll"
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::NONE))
@@ -698,8 +745,8 @@ async fn run_app<B: ratatui::backend::Backend>(
                             KeyCode::Char('i') => {
                                 app.input_focused = true;
                             }
-                            KeyCode::Down | KeyCode::Char('j') => app.next(),
-                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                            KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+                            KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
                             KeyCode::Enter => {
                                 app.start_command();
                             }
@@ -709,16 +756,6 @@ async fn run_app<B: ratatui::backend::Backend>(
                             KeyCode::Char(c @ '1'..='9') => {
                                 let idx = c.to_digit(10).unwrap() as usize - 1;
                                 app.switch_to_tab(idx);
-                            }
-                            KeyCode::PageUp => {
-                                for _ in 0..10 {
-                                    app.scroll_up();
-                                }
-                            }
-                            KeyCode::PageDown => {
-                                for _ in 0..10 {
-                                    app.scroll_down();
-                                }
                             }
                             _ => {}
                         }
@@ -731,7 +768,7 @@ async fn run_app<B: ratatui::backend::Backend>(
         while let Ok(AppEvent::FileChanged(path)) = event_rx.try_recv() {
             app.last_file_changed = Some(path.display().to_string());
             app.add_output(format!("File changed: {}", path.display()));
-            app.add_output("Press Enter to run selected command".to_string());
+            app.start_command();
         }
     }
 }
