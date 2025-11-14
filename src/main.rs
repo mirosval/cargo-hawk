@@ -15,6 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
+use serde::Deserialize;
 use std::{
     io,
     path::PathBuf,
@@ -94,6 +95,75 @@ struct CommandResult {
     stderr: String,
     success: bool,
     exit_code: Option<i32>,
+}
+
+// Cargo JSON message format models
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "reason", rename_all = "kebab-case")]
+enum CargoMessage {
+    CompilerMessage {
+        message: DiagnosticMessage,
+        #[serde(default)]
+        target: Option<Target>,
+    },
+    CompilerArtifact {
+        #[serde(default)]
+        target: Option<Target>,
+        #[serde(default)]
+        filenames: Vec<String>,
+        #[serde(default)]
+        fresh: bool,
+    },
+    BuildScriptExecuted {
+        #[serde(default)]
+        package_id: String,
+    },
+    BuildFinished {
+        success: bool,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DiagnosticMessage {
+    /// The primary message (e.g., "unused variable: `x`")
+    message: String,
+    /// The level: "error", "warning", "note", "help", etc.
+    level: String,
+    /// ANSI-formatted rendered output
+    #[serde(default)]
+    rendered: Option<String>,
+    /// Spans showing where in the code the issue is
+    #[serde(default)]
+    spans: Vec<DiagnosticSpan>,
+    /// Child diagnostics (notes, help messages, etc.)
+    #[serde(default)]
+    children: Vec<DiagnosticMessage>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DiagnosticSpan {
+    /// File path where the diagnostic points
+    #[serde(default)]
+    file_name: String,
+    /// Line number (1-indexed)
+    #[serde(default)]
+    line_start: usize,
+    /// Column number (1-indexed)
+    #[serde(default)]
+    column_start: usize,
+    /// Whether this is the primary span
+    #[serde(default)]
+    is_primary: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Target {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    kind: Vec<String>,
 }
 
 impl App {
