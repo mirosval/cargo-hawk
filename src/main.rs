@@ -237,6 +237,28 @@ impl App {
         self.plans.iter().map(|p| p.commands.len()).sum()
     }
 
+    fn get_selected_step_mut(&mut self) -> Option<&mut PlanStep> {
+        let selected_idx = self.selected.selected()?;
+        let mut current_idx = 0;
+        for plan in &mut self.plans {
+            for step in &mut plan.commands {
+                if current_idx == selected_idx {
+                    return Some(step);
+                }
+                current_idx += 1;
+            }
+        }
+        None
+    }
+
+    fn reset_all_steps(&mut self) {
+        for plan in &mut self.plans {
+            for step in &mut plan.commands {
+                step.status = Status::NotRun;
+            }
+        }
+    }
+
     fn next(&mut self) {
         if self.running {
             return;
@@ -443,6 +465,11 @@ impl App {
         self.running = true;
         self.clear_output();
 
+        // Set status to Running
+        if let Some(step) = self.get_selected_step_mut() {
+            step.status = Status::Running;
+        }
+
         // Parse the command string into program and args
         let parts: Vec<String> = command_str
             .split_whitespace()
@@ -521,7 +548,7 @@ impl App {
                 let task = self.running_task.take().unwrap();
 
                 // Get the result (this won't block since it's finished)
-                match task.await {
+                let final_status = match task.await {
                     Ok(Ok(result)) => {
                         for line in result.stdout.lines() {
                             self.process_output_line(line);
@@ -529,9 +556,35 @@ impl App {
                         for line in result.stderr.lines() {
                             self.process_output_line(line);
                         }
+
+                        // Determine status based on cargo messages
+                        let has_error = self.cargo_messages.iter().any(|msg| {
+                            if let CargoMessage::CompilerMessage { message, .. } = msg {
+                                message.level == "error"
+                            } else {
+                                false
+                            }
+                        });
+
+                        let has_warning = self.cargo_messages.iter().any(|msg| {
+                            if let CargoMessage::CompilerMessage { message, .. } = msg {
+                                message.level == "warning"
+                            } else {
+                                false
+                            }
+                        });
+
+                        if has_error || !result.success {
+                            Status::Failure
+                        } else if has_warning {
+                            Status::Warning
+                        } else {
+                            Status::Success
+                        }
                     }
                     Ok(Err(e)) => {
                         self.add_output(format!("Error: {}", e));
+                        Status::Failure
                     }
                     Err(e) => {
                         if e.is_cancelled() {
@@ -539,7 +592,13 @@ impl App {
                         } else {
                             self.add_output(format!("Task error: {}", e));
                         }
+                        Status::Failure
                     }
+                };
+
+                // Update the status of the selected step
+                if let Some(step) = self.get_selected_step_mut() {
+                    step.status = final_status;
                 }
 
                 self.running = false;
@@ -578,6 +637,16 @@ fn get_tab_color(idx: usize) -> Color {
     colors[idx % colors.len()]
 }
 
+fn get_status_indicator(status: &Status) -> &str {
+    match status {
+        Status::NotRun => "",
+        Status::Running => "...",
+        Status::Warning => "!",
+        Status::Failure => "✗",
+        Status::Success => "✓",
+    }
+}
+
 fn ui(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -597,7 +666,12 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let mut step_idx = 0;
     for plan in &app.plans {
         for step in &plan.commands {
-            let tab_text = format!(" {} {} ", step_idx + 1, step.name);
+            let status_indicator = get_status_indicator(&step.status);
+            let tab_text = if status_indicator.is_empty() {
+                format!(" {} {} ", step_idx + 1, step.name)
+            } else {
+                format!(" {} {} {} ", step_idx + 1, step.name, status_indicator)
+            };
             let tab_color = get_tab_color(step_idx);
             let style = if step_idx == selected_idx {
                 Style::default()
@@ -790,6 +864,7 @@ async fn run_app<B: ratatui::backend::Backend>(
         while let Ok(AppEvent::FileChanged(path)) = event_rx.try_recv() {
             app.last_file_changed = Some(path.display().to_string());
             app.add_output(format!("File changed: {}", path.display()));
+            app.reset_all_steps();
             app.start_command();
         }
     }
