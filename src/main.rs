@@ -15,7 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     io,
     path::PathBuf,
@@ -88,6 +88,7 @@ struct App {
     running_task: Option<JoinHandle<Result<CommandResult>>>,
     running_child: Arc<Mutex<Option<Child>>>,
     input_focused: bool,
+    cargo_messages: Vec<CargoMessage>,
 }
 
 struct CommandResult {
@@ -98,7 +99,7 @@ struct CommandResult {
 }
 
 // Cargo JSON message format models
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 enum CargoMessage {
     CompilerMessage {
@@ -125,7 +126,7 @@ enum CargoMessage {
     Unknown,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct DiagnosticMessage {
     /// The primary message (e.g., "unused variable: `x`")
     message: String,
@@ -142,7 +143,7 @@ struct DiagnosticMessage {
     children: Vec<DiagnosticMessage>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct DiagnosticSpan {
     /// File path where the diagnostic points
     #[serde(default)]
@@ -158,7 +159,7 @@ struct DiagnosticSpan {
     is_primary: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct Target {
     #[serde(default)]
     name: String,
@@ -203,6 +204,7 @@ impl App {
             running_task: None,
             running_child: Arc::new(Mutex::new(None)),
             input_focused: false,
+            cargo_messages: Vec::new(),
         }
     }
 
@@ -311,7 +313,80 @@ impl App {
 
     fn clear_output(&mut self) {
         self.output.clear();
+        self.cargo_messages.clear();
         self.scroll_offset = 0;
+    }
+
+    fn render_cargo_message(msg: &CargoMessage) -> Vec<String> {
+        match msg {
+            CargoMessage::CompilerMessage { message, target } => {
+                let mut output = Vec::new();
+
+                // Use the rendered field if available, otherwise format manually
+                if let Some(rendered) = &message.rendered {
+                    // The rendered field contains the full ANSI-formatted diagnostic
+                    for line in rendered.lines() {
+                        output.push(line.to_string());
+                    }
+                } else {
+                    // Fallback: manually format the message
+                    let level_prefix = match message.level.as_str() {
+                        "error" => "error",
+                        "warning" => "warning",
+                        "note" => "note",
+                        "help" => "help",
+                        _ => &message.level,
+                    };
+
+                    if let Some(target) = target {
+                        output.push(format!(
+                            "[{}] {}: {}",
+                            target.name, level_prefix, message.message
+                        ));
+                    } else {
+                        output.push(format!("{}: {}", level_prefix, message.message));
+                    }
+                }
+
+                output
+            }
+            CargoMessage::CompilerArtifact { .. } => {
+                vec![] // Skip artifact messages
+            }
+            CargoMessage::BuildScriptExecuted { .. } => {
+                vec![] // Skip build script messages
+            }
+            CargoMessage::BuildFinished { success } => {
+                if *success {
+                    vec!["   Build finished successfully".to_string()]
+                } else {
+                    vec!["   Build failed".to_string()]
+                }
+            }
+            CargoMessage::Unknown => {
+                vec![] // Skip unknown messages
+            }
+        }
+    }
+
+    fn process_output_line(&mut self, line: &str) {
+        // Try to parse as JSON cargo message
+        if line.trim().starts_with('{') {
+            if let Ok(msg) = serde_json::from_str::<CargoMessage>(line) {
+                // Successfully parsed as cargo message
+                self.cargo_messages.push(msg.clone());
+
+                // Render the message instead of showing raw JSON
+                let rendered_lines = Self::render_cargo_message(&msg);
+                for rendered_line in rendered_lines {
+                    self.add_output(rendered_line);
+                }
+                return;
+            }
+        }
+
+        // Not a JSON message, add as-is
+        self.add_output(line.to_string());
     }
 
     fn start_command(&mut self) {
@@ -324,8 +399,6 @@ impl App {
 
         self.running = true;
         self.clear_output();
-        self.add_output(format!("Running: {}", command_str));
-        self.add_output(String::new());
 
         // Parse the command string into program and args
         let parts: Vec<String> = command_str
@@ -408,19 +481,10 @@ impl App {
                 match task.await {
                     Ok(Ok(result)) => {
                         for line in result.stdout.lines() {
-                            self.add_output(line.to_string());
+                            self.process_output_line(line);
                         }
                         for line in result.stderr.lines() {
-                            self.add_output(line.to_string());
-                        }
-                        self.add_output(String::new());
-                        if result.success {
-                            self.add_output("✓ Command completed successfully".to_string());
-                        } else {
-                            self.add_output(format!(
-                                "✗ Command failed with exit code: {}",
-                                result.exit_code.unwrap_or(-1)
-                            ));
+                            self.process_output_line(line);
                         }
                     }
                     Ok(Err(e)) => {
@@ -746,7 +810,10 @@ async fn main() -> Result<()> {
     let _cleanup = TerminalCleanup;
 
     // Create app
-    let app = App::new(args.custom);
+    let mut app = App::new(args.custom);
+
+    // Auto-run the selected tab's command on startup
+    app.start_command();
 
     // Run app
     let res = run_app(&mut terminal, app, event_rx).await;
