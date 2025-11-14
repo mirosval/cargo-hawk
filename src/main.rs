@@ -269,7 +269,20 @@ impl App {
         }
 
         let program = parts[0].clone();
-        let args: Vec<String> = parts[1..].to_vec();
+        let mut args: Vec<String> = parts[1..].to_vec();
+
+        // Inject JSON format for cargo commands
+        if program == "cargo" && !args.is_empty() {
+            let cargo_subcommand = &args[0];
+            let known_commands = ["check", "build", "test", "run", "clippy"];
+
+            if known_commands.contains(&cargo_subcommand.as_str()) {
+                // Insert --message-format after the subcommand
+                args.insert(1, "--message-format".to_string());
+                args.insert(2, "json-diagnostic-rendered-ansi".to_string());
+            }
+        }
+
         let child_handle = self.running_child.clone();
 
         // Spawn the command execution as a background task
