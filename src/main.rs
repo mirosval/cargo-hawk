@@ -10,6 +10,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
+    prelude::Backend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, ListState, Paragraph, Wrap},
@@ -102,8 +103,35 @@ struct Plan {
     commands: Vec<PlanStep>,
 }
 
+impl Plan {
+    fn from_string(s: &str) -> Plan {
+        let steps: Vec<PlanStep> = s
+            .split("\n")
+            .into_iter()
+            .filter(|step| step.trim() != "")
+            .map(|cmd| {
+                let name = cmd
+                    .strip_prefix("cargo ")
+                    .and_then(|s| s.split_whitespace().next())
+                    .unwrap_or("custom")
+                    .to_string();
+                PlanStep {
+                    name,
+                    cmd: cmd.to_string(),
+                    status: Status::NotRun,
+                }
+            })
+            .collect();
+        Plan {
+            name: "default".to_string(),
+            commands: steps,
+        }
+    }
+}
+
 struct App {
     plans: Vec<Plan>,
+    current_plan: Plan,
     selected: ListState,
     output: Vec<String>,
     last_file_changed: Option<String>,
@@ -202,7 +230,7 @@ struct Target {
 
 impl App {
     fn new(custom_command: Option<String>) -> Self {
-        let mut plans = vec![Plan {
+        let current_plan = Plan {
             name: "default".to_string(),
             commands: vec![
                 PlanStep {
@@ -221,7 +249,8 @@ impl App {
                     status: Status::NotRun,
                 },
             ],
-        }];
+        };
+        let mut plans = vec![current_plan.clone()];
 
         if let Some(cmd) = custom_command {
             // Extract name from command (word after "cargo" if present)
@@ -257,6 +286,7 @@ impl App {
 
         Self {
             plans,
+            current_plan,
             selected,
             output: vec!["Watching for file changes...".to_string()],
             last_file_changed: None,
@@ -379,30 +409,6 @@ impl App {
         Some(global_idx)
     }
 
-    fn next(&mut self) {
-        if self.running {
-            return;
-        }
-        let current = self.selected.selected().unwrap_or(0);
-        let total = self.total_steps();
-        let i = if current >= total - 1 { 0 } else { current + 1 };
-        self.selected.select(Some(i));
-        self.update_cursor_for_current_input();
-        self.start_command();
-    }
-
-    fn previous(&mut self) {
-        if self.running {
-            return;
-        }
-        let current = self.selected.selected().unwrap_or(0);
-        let total = self.total_steps();
-        let i = if current == 0 { total - 1 } else { current - 1 };
-        self.selected.select(Some(i));
-        self.update_cursor_for_current_input();
-        self.start_command();
-    }
-
     fn switch_to_tab(&mut self, idx: usize) {
         if !self.running && idx < self.total_steps() {
             self.selected.select(Some(idx));
@@ -411,22 +417,37 @@ impl App {
         }
     }
 
-    fn start_plan_editing(&mut self) {
-        let selected_idx = self.selected.selected().unwrap_or(0);
-        if let Some((plan_idx, _)) = self.get_plan_and_step_index(selected_idx) {
-            // Extract commands from current plan
-            self.plan_edit_text = self.plans[plan_idx]
-                .commands
-                .iter()
-                .map(|step| step.cmd.clone())
-                .collect();
-            self.plan_edit_cursor_line = 0;
-            self.plan_edit_cursor_col = if !self.plan_edit_text.is_empty() {
-                self.plan_edit_text[0].len()
-            } else {
-                0
-            };
-            self.plan_editing = true;
+    fn start_plan_editing<B: Backend>(&mut self, terminal: &mut Terminal<B>) {
+        crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+
+        disable_raw_mode().expect("disable_raw_mode");
+        let plan_text = self
+            .current_plan
+            .commands
+            .iter()
+            .map(|step| step.cmd.to_string())
+            .fold(String::new(), |acc, s| acc + "\n" + &s);
+
+        let edited_plan = edit::edit(plan_text.trim()).unwrap();
+        let new_plan = Plan::from_string(&edited_plan);
+        crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
+        enable_raw_mode().unwrap();
+        terminal.clear();
+        self.current_plan = new_plan.clone();
+        self.plans = vec![new_plan];
+        // Rebuild command_inputs for all plans
+        self.command_inputs = self
+            .plans
+            .iter()
+            .flat_map(|p| p.commands.iter().map(|step| step.cmd.clone()))
+            .collect();
+        if let Some(first_step_idx) = self.get_first_step_in_plan() {
+            self.selected.select(Some(first_step_idx));
+            self.update_cursor_for_current_input();
+
+            if self.auto_mode {
+                self.start_command();
+            }
         }
     }
 
@@ -1267,7 +1288,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 }
                             }
                             KeyCode::Char('p') => {
-                                app.start_plan_editing();
+                                app.start_plan_editing(terminal);
                             }
                             KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                             KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
