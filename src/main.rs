@@ -17,6 +17,7 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    fmt::Display,
     io,
     path::PathBuf,
     process::Stdio,
@@ -57,6 +58,38 @@ enum Status {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+enum DiagnosticDisplayMode {
+    Summary,
+    First,
+    Full,
+}
+
+impl DiagnosticDisplayMode {
+    fn next(&self) -> Self {
+        match self {
+            DiagnosticDisplayMode::Summary => DiagnosticDisplayMode::First,
+            DiagnosticDisplayMode::First => DiagnosticDisplayMode::Full,
+            DiagnosticDisplayMode::Full => DiagnosticDisplayMode::Summary,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            DiagnosticDisplayMode::Summary => "Summary",
+            DiagnosticDisplayMode::First => "First",
+            DiagnosticDisplayMode::Full => "Full",
+        }
+    }
+}
+
+impl Display for DiagnosticDisplayMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct PlanStep {
     name: String,
     cmd: String,
@@ -75,7 +108,7 @@ struct App {
     output: Vec<String>,
     last_file_changed: Option<String>,
     running: bool,
-    scroll_offset: usize,
+    scroll_offset: u16,
     command_inputs: Vec<String>,
     input_cursor: usize,
     running_task: Option<JoinHandle<Result<CommandResult>>>,
@@ -88,6 +121,7 @@ struct App {
     plan_edit_text: Vec<String>,
     plan_edit_cursor_line: usize,
     plan_edit_cursor_col: usize,
+    diagnostic_display_mode: DiagnosticDisplayMode,
 }
 
 struct CommandResult {
@@ -240,6 +274,7 @@ impl App {
             plan_edit_text: Vec::new(),
             plan_edit_cursor_line: 0,
             plan_edit_cursor_col: 0,
+            diagnostic_display_mode: DiagnosticDisplayMode::First,
         }
     }
 
@@ -569,14 +604,8 @@ impl App {
         self.scroll_offset += 1;
     }
 
-    fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = self.output.len().saturating_sub(1);
-    }
-
     fn add_output(&mut self, line: String) {
         self.output.push(line);
-        // Auto-scroll to bottom when new output arrives
-        self.scroll_to_bottom();
     }
 
     fn clear_output(&mut self) {
@@ -586,7 +615,11 @@ impl App {
         self.first_diagnostic_shown = false;
     }
 
-    fn render_cargo_message(msg: &CargoMessage, show_full: bool) -> Vec<String> {
+    fn render_cargo_message(
+        msg: &CargoMessage,
+        mode: &DiagnosticDisplayMode,
+        is_first: bool,
+    ) -> Vec<String> {
         match msg {
             CargoMessage::CompilerMessage { message, target } => {
                 let mut output = Vec::new();
@@ -594,15 +627,37 @@ impl App {
                 // Use the rendered field if available, otherwise format manually
                 if let Some(rendered) = &message.rendered {
                     // The rendered field contains the full ANSI-formatted diagnostic
-                    if show_full {
-                        // Show all lines for the first diagnostic
-                        for line in rendered.lines() {
-                            output.push(line.to_string());
+                    match mode {
+                        DiagnosticDisplayMode::Summary => {
+                            // Show only first line and file location
+                            if let Some(first_line) = rendered.lines().next() {
+                                output.push(first_line.to_string());
+                            }
+                            // Add file location from primary span
+                            if let Some(span) = message.spans.iter().find(|s| s.is_primary) {
+                                output.push(format!(
+                                    "  --> {}:{}:{}",
+                                    span.file_name, span.line_start, span.column_start
+                                ));
+                            }
                         }
-                    } else {
-                        // Only show the first line (the warning/error summary) for subsequent diagnostics
-                        if let Some(first_line) = rendered.lines().next() {
-                            output.push(first_line.to_string());
+                        DiagnosticDisplayMode::First => {
+                            // Show full for first diagnostic, summary for rest
+                            if is_first {
+                                for line in rendered.lines() {
+                                    output.push(line.to_string());
+                                }
+                            } else {
+                                if let Some(first_line) = rendered.lines().next() {
+                                    output.push(first_line.to_string());
+                                }
+                            }
+                        }
+                        DiagnosticDisplayMode::Full => {
+                            // Show all lines for all diagnostics
+                            for line in rendered.lines() {
+                                output.push(line.to_string());
+                            }
                         }
                     }
                 } else {
@@ -622,6 +677,16 @@ impl App {
                         ));
                     } else {
                         output.push(format!("{}: {}", level_prefix, message.message));
+                    }
+
+                    // Add file location in Summary mode
+                    if matches!(mode, DiagnosticDisplayMode::Summary) {
+                        if let Some(span) = message.spans.iter().find(|s| s.is_primary) {
+                            output.push(format!(
+                                "  --> {}:{}:{}",
+                                span.file_name, span.line_start, span.column_start
+                            ));
+                        }
                     }
                 }
 
@@ -665,7 +730,8 @@ impl App {
                 };
 
                 // Render the message instead of showing raw JSON
-                let rendered_lines = Self::render_cargo_message(&msg, show_full);
+                let rendered_lines =
+                    Self::render_cargo_message(&msg, &self.diagnostic_display_mode, show_full);
                 for rendered_line in rendered_lines {
                     self.add_output(rendered_line);
                 }
@@ -967,14 +1033,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
         height: chunks[1].height.saturating_sub(1),
     };
 
-    let output_height = output_area.height as usize;
-    let start_line = app
-        .scroll_offset
-        .min(app.output.len().saturating_sub(output_height));
-    let end_line = (start_line + output_height).min(app.output.len());
-
     // Parse ANSI color codes in the output
-    let visible_output: Vec<Line> = app.output[start_line..end_line]
+    let visible_output: Vec<Line> = app
+        .output
         .iter()
         .map(|line| {
             // Parse ANSI codes and convert to styled text
@@ -995,7 +1056,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let output_panel = Paragraph::new(visible_output)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: false })
-        .scroll((0, 0));
+        .scroll((app.scroll_offset as u16, 0));
 
     frame.render_widget(output_panel, output_area);
 
@@ -1023,9 +1084,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
     // Footer with mode-specific shortcuts
     let footer_text = if app.input_focused {
-        "Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit"
+        format!("Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit")
     } else {
-        "q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Auto advance | 1-9: Switch tab | j/k/↑/↓: Scroll"
+        format!("q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Auto advance | 1-9: Switch tab | j/k/↑/↓: Scroll | s: Diag ({diag})", diag = app.diagnostic_display_mode)
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::NONE))
@@ -1219,6 +1280,10 @@ async fn run_app<B: ratatui::backend::Backend>(
                             KeyCode::Char(c @ '1'..='9') => {
                                 let idx = c.to_digit(10).unwrap() as usize - 1;
                                 app.switch_to_tab(idx);
+                            }
+                            KeyCode::Char('s') => {
+                                app.diagnostic_display_mode = app.diagnostic_display_mode.next();
+                                app.start_command();
                             }
                             _ => {}
                         }
