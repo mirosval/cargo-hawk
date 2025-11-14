@@ -48,32 +48,8 @@ enum AppEvent {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum CargoCommand {
-    Check,
-    Build,
-    Run,
-    Test,
-    Clippy,
-    Custom(String),
-}
-
-impl CargoCommand {
-    fn as_display(&self) -> &str {
-        match self {
-            CargoCommand::Check => "check",
-            CargoCommand::Build => "build",
-            CargoCommand::Run => "run",
-            CargoCommand::Test => "test",
-            CargoCommand::Clippy => "clippy",
-            CargoCommand::Custom(cmd) => {
-                if cmd.is_empty() {
-                    CUSTOM_COMMAND_PLACEHOLDER
-                } else {
-                    cmd
-                }
-            }
-        }
-    }
+struct CargoCommand {
+    cmd: String,
 }
 
 struct App {
@@ -170,25 +146,25 @@ struct Target {
 impl App {
     fn new(custom_command: Option<String>) -> Self {
         let mut commands = vec![
-            CargoCommand::Check,
-            CargoCommand::Build,
-            CargoCommand::Run,
-            CargoCommand::Test,
-            CargoCommand::Clippy,
-            CargoCommand::Custom("".to_string()),
+            CargoCommand { cmd: "cargo check".to_string() },
+            CargoCommand { cmd: "cargo build".to_string() },
+            CargoCommand { cmd: "cargo run".to_string() },
+            CargoCommand { cmd: "cargo test".to_string() },
+            CargoCommand { cmd: "cargo clippy".to_string() },
+            CargoCommand { cmd: CUSTOM_COMMAND_PLACEHOLDER.to_string() },
         ];
 
         if let Some(cmd) = custom_command {
-            commands.push(CargoCommand::Custom(cmd));
+            commands.push(CargoCommand { cmd });
         }
 
         let mut selected = ListState::default();
         selected.select(Some(0));
 
-        // Initialize command inputs with default command strings
+        // Initialize command inputs from the command strings
         let command_inputs: Vec<String> = commands
             .iter()
-            .map(|c| format!("cargo {}", c.as_display()))
+            .map(|c| c.cmd.clone())
             .collect();
         let input_cursor = command_inputs[0].len();
 
@@ -552,7 +528,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
     let mut tab_spans = vec![];
     for (idx, cmd) in app.commands.iter().enumerate() {
-        let tab_text = format!(" {} {} ", idx + 1, cmd.as_display());
+        // Display shortened command (strip "cargo " prefix if present)
+        let display_text = cmd.cmd.strip_prefix("cargo ").unwrap_or(&cmd.cmd);
+        let tab_text = format!(" {} {} ", idx + 1, display_text);
         let tab_color = get_tab_color(idx);
         let style = if idx == selected_idx {
             Style::default()
