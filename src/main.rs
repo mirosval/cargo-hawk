@@ -82,6 +82,7 @@ struct App {
     running_child: Arc<Mutex<Option<Child>>>,
     input_focused: bool,
     cargo_messages: Vec<CargoMessage>,
+    first_diagnostic_shown: bool,
 }
 
 struct CommandResult {
@@ -228,6 +229,7 @@ impl App {
             running_child: Arc::new(Mutex::new(None)),
             input_focused: false,
             cargo_messages: Vec::new(),
+            first_diagnostic_shown: false,
         }
     }
 
@@ -336,9 +338,10 @@ impl App {
         self.output.clear();
         self.cargo_messages.clear();
         self.scroll_offset = 0;
+        self.first_diagnostic_shown = false;
     }
 
-    fn render_cargo_message(msg: &CargoMessage) -> Vec<String> {
+    fn render_cargo_message(msg: &CargoMessage, show_full: bool) -> Vec<String> {
         match msg {
             CargoMessage::CompilerMessage { message, target } => {
                 let mut output = Vec::new();
@@ -346,8 +349,16 @@ impl App {
                 // Use the rendered field if available, otherwise format manually
                 if let Some(rendered) = &message.rendered {
                     // The rendered field contains the full ANSI-formatted diagnostic
-                    for line in rendered.lines() {
-                        output.push(line.to_string());
+                    if show_full {
+                        // Show all lines for the first diagnostic
+                        for line in rendered.lines() {
+                            output.push(line.to_string());
+                        }
+                    } else {
+                        // Only show the first line (the warning/error summary) for subsequent diagnostics
+                        if let Some(first_line) = rendered.lines().next() {
+                            output.push(first_line.to_string());
+                        }
                     }
                 } else {
                     // Fallback: manually format the message
@@ -397,8 +408,19 @@ impl App {
                 // Successfully parsed as cargo message
                 self.cargo_messages.push(msg.clone());
 
+                // Determine if we should show full diagnostic
+                let show_full = if matches!(msg, CargoMessage::CompilerMessage { .. }) {
+                    // Show full for first diagnostic, summary only for subsequent ones
+                    let show = !self.first_diagnostic_shown;
+                    self.first_diagnostic_shown = true;
+                    show
+                } else {
+                    // Non-diagnostic messages always show in full (if they show at all)
+                    true
+                };
+
                 // Render the message instead of showing raw JSON
-                let rendered_lines = Self::render_cargo_message(&msg);
+                let rendered_lines = Self::render_cargo_message(&msg, show_full);
                 for rendered_line in rendered_lines {
                     self.add_output(rendered_line);
                 }
