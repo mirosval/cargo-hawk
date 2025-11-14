@@ -83,6 +83,7 @@ struct App {
     input_focused: bool,
     cargo_messages: Vec<CargoMessage>,
     first_diagnostic_shown: bool,
+    auto_mode: bool,
 }
 
 struct CommandResult {
@@ -230,6 +231,7 @@ impl App {
             input_focused: false,
             cargo_messages: Vec::new(),
             first_diagnostic_shown: false,
+            auto_mode: true,
         }
     }
 
@@ -257,6 +259,81 @@ impl App {
                 step.status = Status::NotRun;
             }
         }
+    }
+
+    fn get_plan_and_step_index(&self, global_idx: usize) -> Option<(usize, usize)> {
+        let mut current_idx = 0;
+        for (plan_idx, plan) in self.plans.iter().enumerate() {
+            for step_idx in 0..plan.commands.len() {
+                if current_idx == global_idx {
+                    return Some((plan_idx, step_idx));
+                }
+                current_idx += 1;
+            }
+        }
+        None
+    }
+
+    fn get_next_step_in_plan(&self) -> Option<usize> {
+        let selected_idx = self.selected.selected()?;
+        let (plan_idx, step_idx) = self.get_plan_and_step_index(selected_idx)?;
+
+        // Check if there's a next step in the same plan
+        if step_idx + 1 < self.plans[plan_idx].commands.len() {
+            // Calculate the global index of the next step
+            let mut global_idx = 0;
+            for (p_idx, plan) in self.plans.iter().enumerate() {
+                if p_idx < plan_idx {
+                    global_idx += plan.commands.len();
+                } else if p_idx == plan_idx {
+                    global_idx += step_idx + 1;
+                    break;
+                }
+            }
+            Some(global_idx)
+        } else {
+            None
+        }
+    }
+
+    fn get_first_non_successful_step_in_plan(&self) -> Option<usize> {
+        let selected_idx = self.selected.selected()?;
+        let (plan_idx, _) = self.get_plan_and_step_index(selected_idx)?;
+
+        // Find the first step in the current plan that is not successful
+        let plan = &self.plans[plan_idx];
+        for (step_idx, step) in plan.commands.iter().enumerate() {
+            if step.status != Status::Success {
+                // Calculate the global index of this step
+                let mut global_idx = 0;
+                for (p_idx, p) in self.plans.iter().enumerate() {
+                    if p_idx < plan_idx {
+                        global_idx += p.commands.len();
+                    } else if p_idx == plan_idx {
+                        global_idx += step_idx;
+                        break;
+                    }
+                }
+                return Some(global_idx);
+            }
+        }
+        None
+    }
+
+    fn get_first_step_in_plan(&self) -> Option<usize> {
+        let selected_idx = self.selected.selected()?;
+        let (plan_idx, _) = self.get_plan_and_step_index(selected_idx)?;
+
+        // Calculate the global index of the first step in the current plan
+        let mut global_idx = 0;
+        for (p_idx, p) in self.plans.iter().enumerate() {
+            if p_idx < plan_idx {
+                global_idx += p.commands.len();
+            } else if p_idx == plan_idx {
+                break;
+            }
+        }
+        Some(global_idx)
     }
 
     fn next(&mut self) {
@@ -598,10 +675,20 @@ impl App {
 
                 // Update the status of the selected step
                 if let Some(step) = self.get_selected_step_mut() {
-                    step.status = final_status;
+                    step.status = final_status.clone();
                 }
 
                 self.running = false;
+
+                // Auto-advance to next step if in auto mode and current step succeeded or has warnings
+                if self.auto_mode && matches!(final_status, Status::Success | Status::Warning) {
+                    if let Some(next_step_idx) = self.get_next_step_in_plan() {
+                        self.selected.select(Some(next_step_idx));
+                        self.update_cursor_for_current_input();
+                        self.start_command();
+                    }
+                    // Note: auto mode stays on even when reaching end of plan
+                }
             }
         }
     }
@@ -663,6 +750,18 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let selected_color = get_tab_color(selected_idx);
 
     let mut tab_spans = vec![];
+
+    // Add auto mode indicator if enabled
+    if app.auto_mode {
+        tab_spans.push(Span::styled(
+            " [AUTO] ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     let mut step_idx = 0;
     for plan in &app.plans {
         for step in &plan.commands {
@@ -780,7 +879,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let footer_text = if app.input_focused {
         "Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit"
     } else {
-        "q/Esc: Quit | i: Edit command | Enter/r: Run | 1-9: Switch tab | j/k/↑/↓: Scroll"
+        "q/Esc: Quit | i: Edit command | Enter/r: Run | a: Toggle auto | 1-9: Switch tab | j/k/↑/↓: Scroll"
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::NONE))
@@ -841,6 +940,20 @@ async fn run_app<B: ratatui::backend::Backend>(
                             KeyCode::Char('i') => {
                                 app.input_focused = true;
                             }
+                            KeyCode::Char('a') => {
+                                app.auto_mode = !app.auto_mode;
+                                // If turning on auto mode, start from first non-successful step
+                                if app.auto_mode {
+                                    if let Some(first_step_idx) =
+                                        app.get_first_non_successful_step_in_plan()
+                                    {
+                                        app.selected.select(Some(first_step_idx));
+                                        app.update_cursor_for_current_input();
+                                        app.start_command();
+                                    }
+                                    // Note: auto mode stays on even if all steps are already successful
+                                }
+                            }
                             KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                             KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
                             KeyCode::Enter => {
@@ -865,6 +978,15 @@ async fn run_app<B: ratatui::backend::Backend>(
             app.last_file_changed = Some(path.display().to_string());
             app.add_output(format!("File changed: {}", path.display()));
             app.reset_all_steps();
+
+            // If auto mode is on, start from the first step in the plan
+            if app.auto_mode {
+                if let Some(first_step_idx) = app.get_first_step_in_plan() {
+                    app.selected.select(Some(first_step_idx));
+                    app.update_cursor_for_current_input();
+                }
+            }
+
             app.start_command();
         }
     }
