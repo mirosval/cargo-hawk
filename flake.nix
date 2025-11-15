@@ -32,6 +32,7 @@
         devShells.default = mkShell {
           buildInputs = [ rustToolchain ];
           packages = [
+            cargo-insta
             cargo-outdated
             cargo-udeps
             cargo-watch

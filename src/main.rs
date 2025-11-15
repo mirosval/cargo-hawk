@@ -13,7 +13,7 @@ use ratatui::{
     prelude::Backend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, ListState, Paragraph, Widget, Wrap},
     Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,12 @@ impl Display for DiagnosticDisplayMode {
     }
 }
 
+impl Default for DiagnosticDisplayMode {
+    fn default() -> Self {
+        Self::First
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct PlanStep {
     name: String,
@@ -97,7 +103,7 @@ struct PlanStep {
     status: Status,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Plan {
     name: String,
     commands: Vec<PlanStep>,
@@ -129,6 +135,7 @@ impl Plan {
     }
 }
 
+#[derive(Debug)]
 struct App {
     plans: Vec<Plan>,
     current_plan: Plan,
@@ -152,6 +159,220 @@ struct App {
     diagnostic_display_mode: DiagnosticDisplayMode,
 }
 
+impl Widget for &App {
+    fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
+    where
+        Self: Sized,
+    {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(10),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(area);
+
+        // Top line: tabs on left, "Cargo Hawk" on right, with dark background
+        let selected_idx = self.selected.selected().unwrap_or(0);
+        let selected_color = get_tab_color(selected_idx);
+
+        let mut tab_spans = vec![];
+
+        // Add auto mode indicator if enabled
+        if self.auto_mode {
+            tab_spans.push(Span::styled(
+                " » ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        let mut step_idx = 0;
+        for plan in &self.plans {
+            for step in &plan.commands {
+                let status_indicator = get_status_indicator(&step.status);
+                let tab_text = if status_indicator.is_empty() {
+                    format!(" {} {} ", step_idx + 1, step.name)
+                } else {
+                    format!(" {} {} {} ", step_idx + 1, step.name, status_indicator)
+                };
+                let tab_color = get_tab_color(step_idx);
+                let style = if step_idx == selected_idx {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(tab_color)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(tab_color).bg(Color::DarkGray)
+                };
+                tab_spans.push(Span::styled(tab_text, style));
+                step_idx += 1;
+            }
+        }
+
+        let tab_line = Line::from(tab_spans);
+        let tabs_widget = Paragraph::new(tab_line).style(Style::default().bg(Color::DarkGray));
+        tabs_widget.render(chunks[0], buf);
+
+        // Render "Cargo Hawk" on the right side of the same line
+        let title_text = "Cargo Hawk";
+        let title_x = chunks[0].width.saturating_sub(title_text.len() as u16);
+        let title_area = ratatui::layout::Rect {
+            x: chunks[0].x + title_x,
+            y: chunks[0].y,
+            width: title_text.len() as u16,
+            height: 1,
+        };
+        let title =
+            Paragraph::new(title_text).style(Style::default().fg(Color::White).bg(Color::DarkGray));
+        title.render(title_area, buf);
+
+        // Colored separator line using upper half block character (▀) to touch the tab bar
+        let separator_line = "▀".repeat(chunks[1].width as usize);
+        let separator = Paragraph::new(separator_line).style(Style::default().fg(selected_color));
+        let separator_area = ratatui::layout::Rect {
+            x: chunks[1].x,
+            y: chunks[0].y + chunks[0].height,
+            width: chunks[1].width,
+            height: 1,
+        };
+        separator.render(separator_area, buf);
+
+        // Output panel - positioned right after separator
+        let output_area = ratatui::layout::Rect {
+            x: chunks[1].x,
+            y: chunks[0].y + chunks[0].height + 1,
+            width: chunks[1].width,
+            height: chunks[1].height.saturating_sub(1),
+        };
+
+        // Parse ANSI color codes in the output
+        let visible_output: Vec<Line> = self
+            .output
+            .iter()
+            .map(|line| {
+                // Parse ANSI codes and convert to styled text
+                match line.as_bytes().into_text() {
+                    Ok(text) => {
+                        // Extract the first line from the parsed text
+                        if text.lines.is_empty() {
+                            Line::from("")
+                        } else {
+                            text.lines[0].clone()
+                        }
+                    }
+                    Err(_) => Line::from(line.clone()),
+                }
+            })
+            .collect();
+
+        let output_panel = Paragraph::new(visible_output)
+            .block(Block::default().borders(Borders::NONE))
+            .wrap(Wrap { trim: false })
+            .scroll((self.scroll_offset, 0));
+
+        output_panel.render(output_area, buf);
+
+        // Input field with focus indicator
+        let input_text = &self.command_inputs[selected_idx];
+        let (input_style, input_title) = if self.input_focused {
+            (
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+                "Command [EDITING]",
+            )
+        } else {
+            (Style::default().fg(Color::DarkGray), "Command")
+        };
+        let input = Paragraph::new(input_text.as_str())
+            .block(Block::default().borders(Borders::ALL).title(input_title))
+            .style(input_style);
+        input.render(chunks[2], buf);
+
+        // Footer with mode-specific shortcuts
+        let footer_text = if self.input_focused {
+            format!("Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit")
+        } else {
+            format!(
+                "q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Auto advance | 1-9: Switch tab | j/k/↑/↓: Scroll | s: Diag ({diag})",
+                diag = self.diagnostic_display_mode
+            )
+        };
+        let footer = Paragraph::new(footer_text)
+            .block(Block::default().borders(Borders::NONE))
+            .style(Style::default().fg(Color::Gray));
+        footer.render(chunks[3], buf);
+
+        // Render plan editing modal if active
+        if self.plan_editing {
+            // Calculate 80% of screen dimensions
+            let modal_width = (area.width as f32 * 0.8) as u16;
+            let modal_height = (area.height as f32 * 0.8) as u16;
+            let modal_x = (area.width - modal_width) / 2;
+            let modal_y = (area.height - modal_height) / 2;
+
+            let modal_area = ratatui::layout::Rect {
+                x: modal_x,
+                y: modal_y,
+                width: modal_width,
+                height: modal_height,
+            };
+
+            // Clear the background area to prevent transparency
+            Clear.render(modal_area, buf);
+
+            // Render modal background/border
+            let modal_block = Block::default()
+                .title("Edit Plan")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .style(Style::default().bg(Color::Black));
+
+            // Get inner area for text
+            let inner_area = modal_block.inner(modal_area);
+            modal_block.render(modal_area, buf);
+
+            // Render text content
+            let text_lines: Vec<Line> = self
+                .plan_edit_text
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let style = if i == self.plan_edit_cursor_line {
+                        Style::default().fg(Color::White).bg(Color::DarkGray)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    Line::from(Span::styled(line.clone(), style))
+                })
+                .collect();
+
+            let text_widget = Paragraph::new(text_lines)
+                .block(Block::default().borders(Borders::NONE))
+                .wrap(Wrap { trim: false });
+
+            text_widget.render(inner_area, buf);
+
+            // Render help text at bottom of modal
+            let help_text = "Ctrl+S: Save | Esc: Cancel";
+            let help_area = ratatui::layout::Rect {
+                x: modal_area.x + 2,
+                y: modal_area.y + modal_area.height - 2,
+                width: modal_area.width - 4,
+                height: 1,
+            };
+            let help_widget = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
+            help_widget.render(help_area, buf);
+        }
+    }
+}
+
+#[derive(Debug)]
 struct CommandResult {
     stdout: String,
     stderr: String,
@@ -968,6 +1189,10 @@ fn get_status_indicator(status: &Status) -> &str {
 }
 
 fn ui(frame: &mut Frame, app: &mut App) {
+    // Render the main app widget
+    frame.render_widget(&*app, frame.area());
+
+    // Handle cursor positioning (can't be done in Widget trait)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -978,147 +1203,14 @@ fn ui(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    // Top line: tabs on left, "Cargo Hawk" on right, with dark background
-    let selected_idx = app.selected.selected().unwrap_or(0);
-    let selected_color = get_tab_color(selected_idx);
-
-    let mut tab_spans = vec![];
-
-    // Add auto mode indicator if enabled
-    if app.auto_mode {
-        tab_spans.push(Span::styled(
-            " » ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Red)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-
-    let mut step_idx = 0;
-    for plan in &app.plans {
-        for step in &plan.commands {
-            let status_indicator = get_status_indicator(&step.status);
-            let tab_text = if status_indicator.is_empty() {
-                format!(" {} {} ", step_idx + 1, step.name)
-            } else {
-                format!(" {} {} {} ", step_idx + 1, step.name, status_indicator)
-            };
-            let tab_color = get_tab_color(step_idx);
-            let style = if step_idx == selected_idx {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(tab_color)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(tab_color).bg(Color::DarkGray)
-            };
-            tab_spans.push(Span::styled(tab_text, style));
-            step_idx += 1;
-        }
-    }
-
-    let tab_line = Line::from(tab_spans);
-    let tabs_widget = Paragraph::new(tab_line).style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(tabs_widget, chunks[0]);
-
-    // Render "Cargo Hawk" on the right side of the same line
-    let title_text = "Cargo Hawk";
-    let title_x = chunks[0].width.saturating_sub(title_text.len() as u16);
-    let title_area = ratatui::layout::Rect {
-        x: chunks[0].x + title_x,
-        y: chunks[0].y,
-        width: title_text.len() as u16,
-        height: 1,
-    };
-    let title =
-        Paragraph::new(title_text).style(Style::default().fg(Color::White).bg(Color::DarkGray));
-    frame.render_widget(title, title_area);
-
-    // Colored separator line using upper half block character (▀) to touch the tab bar
-    let separator_line = "▀".repeat(chunks[1].width as usize);
-    let separator = Paragraph::new(separator_line).style(Style::default().fg(selected_color));
-    let separator_area = ratatui::layout::Rect {
-        x: chunks[1].x,
-        y: chunks[0].y + chunks[0].height,
-        width: chunks[1].width,
-        height: 1,
-    };
-    frame.render_widget(separator, separator_area);
-
-    // Output panel - positioned right after separator
-    let output_area = ratatui::layout::Rect {
-        x: chunks[1].x,
-        y: chunks[0].y + chunks[0].height + 1,
-        width: chunks[1].width,
-        height: chunks[1].height.saturating_sub(1),
-    };
-
-    // Parse ANSI color codes in the output
-    let visible_output: Vec<Line> = app
-        .output
-        .iter()
-        .map(|line| {
-            // Parse ANSI codes and convert to styled text
-            match line.as_bytes().into_text() {
-                Ok(text) => {
-                    // Extract the first line from the parsed text
-                    if text.lines.is_empty() {
-                        Line::from("")
-                    } else {
-                        text.lines[0].clone()
-                    }
-                }
-                Err(_) => Line::from(line.clone()),
-            }
-        })
-        .collect();
-
-    let output_panel = Paragraph::new(visible_output)
-        .block(Block::default().borders(Borders::NONE))
-        .wrap(Wrap { trim: false })
-        .scroll((app.scroll_offset as u16, 0));
-
-    frame.render_widget(output_panel, output_area);
-
-    // Input field with focus indicator
-    let input_text = &app.command_inputs[selected_idx];
-    let (input_style, input_title) = if app.input_focused {
-        (
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            "Command [EDITING]",
-        )
-    } else {
-        (Style::default().fg(Color::DarkGray), "Command")
-    };
-    let input = Paragraph::new(input_text.as_str())
-        .block(Block::default().borders(Borders::ALL).title(input_title))
-        .style(input_style);
-    frame.render_widget(input, chunks[2]);
-
     // Set cursor position in the input field (only visible when focused)
     if app.input_focused {
         frame.set_cursor_position((chunks[2].x + app.input_cursor as u16 + 1, chunks[2].y + 1));
     }
 
-    // Footer with mode-specific shortcuts
-    let footer_text = if app.input_focused {
-        format!("Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit")
-    } else {
-        format!("q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Auto advance | 1-9: Switch tab | j/k/↑/↓: Scroll | s: Diag ({diag})", diag = app.diagnostic_display_mode)
-    };
-    let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::NONE))
-        .style(Style::default().fg(Color::Gray));
-    frame.render_widget(footer, chunks[3]);
-
-    // Render plan editing modal if active
+    // Set cursor position for plan editing modal
     if app.plan_editing {
         let area = frame.area();
-
-        // Calculate 80% of screen dimensions
         let modal_width = (area.width as f32 * 0.8) as u16;
         let modal_height = (area.height as f32 * 0.8) as u16;
         let modal_x = (area.width - modal_width) / 2;
@@ -1131,56 +1223,16 @@ fn ui(frame: &mut Frame, app: &mut App) {
             height: modal_height,
         };
 
-        // Clear the background area to prevent transparency
-        frame.render_widget(Clear, modal_area);
-
-        // Render modal background/border
         let modal_block = Block::default()
             .title("Edit Plan")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow))
             .style(Style::default().bg(Color::Black));
 
-        // Get inner area for text
         let inner_area = modal_block.inner(modal_area);
-        frame.render_widget(modal_block, modal_area);
-
-        // Render text content
-        let text_lines: Vec<Line> = app
-            .plan_edit_text
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                let style = if i == app.plan_edit_cursor_line {
-                    Style::default().fg(Color::White).bg(Color::DarkGray)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                Line::from(Span::styled(line.clone(), style))
-            })
-            .collect();
-
-        let text_widget = Paragraph::new(text_lines)
-            .block(Block::default().borders(Borders::NONE))
-            .wrap(Wrap { trim: false });
-
-        frame.render_widget(text_widget, inner_area);
-
-        // Set cursor position
         let cursor_x = inner_area.x + app.plan_edit_cursor_col as u16;
         let cursor_y = inner_area.y + app.plan_edit_cursor_line as u16;
         frame.set_cursor_position((cursor_x, cursor_y));
-
-        // Render help text at bottom of modal
-        let help_text = "Ctrl+S: Save | Esc: Cancel";
-        let help_area = ratatui::layout::Rect {
-            x: modal_area.x + 2,
-            y: modal_area.y + modal_area.height - 2,
-            width: modal_area.width - 4,
-            height: 1,
-        };
-        let help_widget = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
-        frame.render_widget(help_widget, help_area);
     }
 }
 
@@ -1407,4 +1459,32 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use testresult::TestResult;
+
+    use super::*;
+
+    #[test]
+    fn test_first_screen() -> TestResult {
+        let app = App::new(None);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
+        terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
+        assert_snapshot!(terminal.backend());
+        Ok(())
+    }
+
+    #[test]
+    fn test_auto_disabled() -> TestResult {
+        let mut app = App::new(None);
+        app.auto_mode = false;
+        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
+        terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
+        assert_snapshot!(terminal.backend());
+        Ok(())
+    }
 }
