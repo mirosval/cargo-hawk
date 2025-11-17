@@ -22,7 +22,7 @@ use crate::app::AppEvent;
 #[derive(Debug)]
 pub struct Tui<B: Backend> {
     terminal: Terminal<B>,
-    task: JoinHandle<()>,
+    task: JoinHandle<Result<()>>,
     event_tx: UnboundedSender<AppEvent>,
     cancellation_token: CancellationToken,
     frame_rate: f64,
@@ -36,7 +36,7 @@ impl<B: Backend> Tui<B> {
         let tick_rate = 4.0;
         let frame_rate = 60.0;
         let cancellation_token = CancellationToken::new();
-        let task = tokio::spawn(async {});
+        let task = tokio::spawn(async { Ok(()) });
         let mouse = false;
         let paste = false;
         Self {
@@ -51,7 +51,7 @@ impl<B: Backend> Tui<B> {
         }
     }
 
-    pub fn start(&mut self) {
+    pub fn start(&mut self) -> Result<()> {
         let tick_delay = Duration::from_secs_f64(1.0 / self.tick_rate);
         let render_delay = Duration::from_secs_f64(1.0 / self.frame_rate);
         self.cancel();
@@ -62,9 +62,7 @@ impl<B: Backend> Tui<B> {
             let mut reader = EventStream::new();
             let mut tick_interval = tokio::time::interval(tick_delay);
             let mut render_interval = tokio::time::interval(render_delay);
-            _event_tx
-                .send(AppEvent::Init)
-                .expect("Sending AppEvent via mpsc Sender");
+            _event_tx.send(AppEvent::Init)?;
             loop {
                 let tick_delay = tick_interval.tick();
                 let render_delay = render_interval.tick();
@@ -79,43 +77,45 @@ impl<B: Backend> Tui<B> {
                                 match evt {
                                     Event::Key(key) => {
                                         if key.kind == KeyEventKind::Press {
-                                            _event_tx.send(AppEvent::Key(key)).expect("Sending AppEvent");
+                                            _event_tx.send(AppEvent::Key(key))?;
                                         }
                                     }
                                     Event::Mouse(mouse) => {
-                                        _event_tx.send(AppEvent::Mouse(mouse)).expect("Sending AppEvent");
+                                        _event_tx.send(AppEvent::Mouse(mouse))?;
                                     }
                                     Event::Resize(x, y) => {
-                                        _event_tx.send(AppEvent::Resize(x, y)).expect("Sending AppEvent");
+                                        _event_tx.send(AppEvent::Resize(x, y))?;
                                     }
                                     Event::FocusLost => {
-                                        _event_tx.send(AppEvent::FocusLost).expect("Sending AppEvent");
+                                        _event_tx.send(AppEvent::FocusLost)?;
                                     }
                                     Event::FocusGained => {
-                                        _event_tx.send(AppEvent::FocusGained).expect("Sending AppEvent");
+                                        _event_tx.send(AppEvent::FocusGained)?;
                                     }
                                     Event::Paste(paste) => {
-                                        _event_tx.send(AppEvent::Paste(paste)).expect("Sending AppEvent");
+                                        _event_tx.send(AppEvent::Paste(paste))?;
                                     }
                                 }
                             }
                             Some(Err(e)) => {
                                 // TODO: Error handling
                                 eprintln!("{:?}", e);
-                                _event_tx.send(AppEvent::Error).expect("Sending AppEvent");
+                                _event_tx.send(AppEvent::Error)?;
                             }
                             None => {},
                         }
                     }
                     _ = tick_delay => {
-                        _event_tx.send(AppEvent::Tick).expect("Sending AppEvent");
+                        _event_tx.send(AppEvent::Tick)?;
                     }
                     _ = render_delay => {
-                        _event_tx.send(AppEvent::Render).expect("Sending AppEvent");
+                        _event_tx.send(AppEvent::Render)?;
                     }
                 }
             }
+            Ok(())
         });
+        Ok(())
     }
 
     pub fn stop(&self) -> Result<()> {
