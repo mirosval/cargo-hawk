@@ -23,6 +23,7 @@ use crate::app::AppEvent;
 pub struct Tui<B: Backend> {
     terminal: Terminal<B>,
     task: JoinHandle<()>,
+    event_tx: UnboundedSender<AppEvent>,
     cancellation_token: CancellationToken,
     frame_rate: f64,
     tick_rate: f64,
@@ -31,7 +32,7 @@ pub struct Tui<B: Backend> {
 }
 
 impl<B: Backend> Tui<B> {
-    pub fn new(terminal: Terminal<B>) -> Tui<B> {
+    pub fn new(terminal: Terminal<B>, event_tx: UnboundedSender<AppEvent>) -> Tui<B> {
         let tick_rate = 4.0;
         let frame_rate = 60.0;
         let cancellation_token = CancellationToken::new();
@@ -41,6 +42,7 @@ impl<B: Backend> Tui<B> {
         Self {
             tick_rate,
             frame_rate,
+            event_tx,
             terminal,
             cancellation_token,
             task,
@@ -49,13 +51,13 @@ impl<B: Backend> Tui<B> {
         }
     }
 
-    pub fn start(&mut self, event_tx: UnboundedSender<AppEvent>) {
+    pub fn start(&mut self) {
         let tick_delay = Duration::from_secs_f64(1.0 / self.tick_rate);
         let render_delay = Duration::from_secs_f64(1.0 / self.frame_rate);
         self.cancel();
         self.cancellation_token = CancellationToken::new();
         let _cancellation_token = self.cancellation_token.clone();
-        let _event_tx = event_tx.clone();
+        let _event_tx = self.event_tx.clone();
         self.task = tokio::spawn(async move {
             let mut reader = EventStream::new();
             let mut tick_interval = tokio::time::interval(tick_delay);
@@ -100,7 +102,7 @@ impl<B: Backend> Tui<B> {
                             Some(Err(e)) => {
                                 // TODO: Error handling
                                 eprintln!("{:?}", e);
-                                _event_tx.send(AppEvent::Error);
+                                _event_tx.send(AppEvent::Error).expect("Sending AppEvent");
                             }
                             None => {},
                         }

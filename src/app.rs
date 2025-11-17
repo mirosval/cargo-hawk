@@ -557,9 +557,13 @@ impl App {
         })
     }
 
+    pub fn event_tx(&self) -> UnboundedSender<AppEvent> {
+        self.event_tx.clone()
+    }
+
     pub async fn run<B: Backend>(&mut self, tui: &mut Tui<B>) -> Result<()> {
         tui.enter()?;
-        tui.start(self.event_tx.clone());
+        tui.start();
 
         loop {
             tui.draw(|f| {
@@ -577,7 +581,7 @@ impl App {
             }
         }
 
-        tui.stop();
+        tui.stop()?;
         tui.exit()?;
         Ok(())
     }
@@ -601,33 +605,6 @@ impl App {
         if self.input_focused {
             frame
                 .set_cursor_position((chunks[2].x + self.input_cursor as u16 + 1, chunks[2].y + 1));
-        }
-
-        // Set cursor position for plan editing modal
-        if self.plan_editing {
-            let area = frame.area();
-            let modal_width = (area.width as f32 * 0.8) as u16;
-            let modal_height = (area.height as f32 * 0.8) as u16;
-            let modal_x = (area.width - modal_width) / 2;
-            let modal_y = (area.height - modal_height) / 2;
-
-            let modal_area = ratatui::layout::Rect {
-                x: modal_x,
-                y: modal_y,
-                width: modal_width,
-                height: modal_height,
-            };
-
-            let modal_block = Block::default()
-                .title("Edit Plan")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .style(Style::default().bg(Color::Black));
-
-            let inner_area = modal_block.inner(modal_area);
-            let cursor_x = inner_area.x + self.plan_edit_cursor_col as u16;
-            let cursor_y = inner_area.y + self.plan_edit_cursor_line as u16;
-            frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
 
@@ -667,6 +644,7 @@ impl App {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => {
                                 self.cancel_running_command();
+                                self.should_quit = true;
                                 return None;
                             }
                             KeyCode::Char('i') => {
@@ -712,16 +690,19 @@ impl App {
                 }
                 None
             }
-            AppEvent::Init => todo!(),
-            AppEvent::FileChanged(path_buf) => todo!(),
-            AppEvent::Mouse(mouse_event) => todo!(),
-            AppEvent::Resize(_, _) => todo!(),
-            AppEvent::FocusLost => todo!(),
-            AppEvent::FocusGained => todo!(),
-            AppEvent::Paste(_) => todo!(),
-            AppEvent::Error => todo!(),
-            AppEvent::Tick => todo!(),
-            AppEvent::Render => todo!(),
+            AppEvent::Init => {
+                // Start the first command on init
+                self.start_command();
+                None
+            }
+            AppEvent::Mouse(_) => None,
+            AppEvent::Resize(_, _) => None,
+            AppEvent::FocusLost => None,
+            AppEvent::FocusGained => None,
+            AppEvent::Paste(_) => None,
+            AppEvent::Error => None,
+            AppEvent::Tick => None,
+            AppEvent::Render => None,
             AppEvent::FileChanged(path) => {
                 self.last_file_changed = Some(path.display().to_string());
                 self.add_output(format!("File changed: {}", path.display()));
@@ -741,8 +722,14 @@ impl App {
         }
     }
 
-    async fn update(&self, action: AppAction) -> Option<AppAction> {
-        None
+    async fn update(&mut self, action: AppAction) -> Option<AppAction> {
+        match action {
+            AppAction::CancelCommand => {
+                self.cancel_running_command();
+                self.should_quit = true;
+                None
+            }
+        }
     }
 
     fn total_steps(&self) -> usize {

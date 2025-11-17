@@ -8,12 +8,13 @@ use cargo_hawk::{App, Args, Tui};
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    let mut app = App::new(args)?;
     let mut tui = {
         let backend = CrosstermBackend::new(std::io::stdout());
         let terminal = Terminal::new(backend)?;
-        Tui::new(terminal)
+        Tui::new(terminal, app.event_tx())
     };
-    App::new(args)?.run(&mut tui);
+    app.run(&mut tui).await?;
 
     Ok(())
 }
