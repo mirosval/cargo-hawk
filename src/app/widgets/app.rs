@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::{
+    App,
     app::{
         model::Status,
         widgets::{
@@ -14,7 +15,6 @@ use crate::{
             header::{Header, HeaderTab},
         },
     },
-    App,
 };
 
 impl Widget for &App {
@@ -62,7 +62,7 @@ impl Widget for &App {
             x: chunks[1].x,
             y: chunks[0].y + chunks[0].height,
             width: chunks[1].width,
-            height: chunks[1].height.saturating_sub(1),
+            height: chunks[1].height,
         };
 
         // Parse ANSI color codes in the output
