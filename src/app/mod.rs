@@ -1,6 +1,12 @@
+use action::AppAction;
 use ansi_to_tui::IntoText;
 use color_eyre::eyre::{eyre, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent};
+use crossterm::event::{KeyCode, KeyEventKind};
+use model::cargo::CargoMessage;
+use model::DiagnosticDisplayMode;
+use model::Plan;
+use model::PlanStep;
+use model::Status;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -10,8 +16,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, ListState, Paragraph, Widget, Wrap},
     Frame,
 };
-use serde::{Deserialize, Serialize};
-use std::{fmt::Display, path::PathBuf, process::Stdio, sync::Arc};
+use std::{path::PathBuf, process::Stdio, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::{
@@ -21,113 +26,11 @@ use tokio::{
 
 use crate::{Args, Tui};
 
-const CUSTOM_COMMAND_PLACEHOLDER: &str = "<custom command>";
+mod action;
+mod event;
+mod model;
 
-#[derive(Debug, Clone)]
-pub enum AppEvent {
-    Init,
-    FileChanged(PathBuf),
-    Key(KeyEvent),
-    Mouse(MouseEvent),
-    Resize(u16, u16),
-    FocusLost,
-    FocusGained,
-    Paste(String),
-    Error,
-    Tick,
-    Render,
-}
-
-#[derive(Debug, Clone)]
-pub enum AppAction {
-    CancelCommand,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Status {
-    NotRun,
-    Running,
-    Warning,
-    Failure,
-    Success,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum DiagnosticDisplayMode {
-    Summary,
-    First,
-    Full,
-}
-
-impl DiagnosticDisplayMode {
-    fn next(&self) -> Self {
-        match self {
-            DiagnosticDisplayMode::Summary => DiagnosticDisplayMode::First,
-            DiagnosticDisplayMode::First => DiagnosticDisplayMode::Full,
-            DiagnosticDisplayMode::Full => DiagnosticDisplayMode::Summary,
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        match self {
-            DiagnosticDisplayMode::Summary => "Summary",
-            DiagnosticDisplayMode::First => "First",
-            DiagnosticDisplayMode::Full => "Full",
-        }
-    }
-}
-
-impl Display for DiagnosticDisplayMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())?;
-        Ok(())
-    }
-}
-
-impl Default for DiagnosticDisplayMode {
-    fn default() -> Self {
-        Self::First
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PlanStep {
-    name: String,
-    cmd: String,
-    status: Status,
-}
-
-#[derive(Debug, Clone, Default)]
-struct Plan {
-    name: String,
-    commands: Vec<PlanStep>,
-}
-
-impl Plan {
-    fn from_string(s: &str) -> Plan {
-        let steps: Vec<PlanStep> = s
-            .split("\n")
-            .into_iter()
-            .filter(|step| step.trim() != "")
-            .map(|cmd| {
-                let name = cmd
-                    .strip_prefix("cargo ")
-                    .and_then(|s| s.split_whitespace().next())
-                    .unwrap_or("custom")
-                    .to_string();
-                PlanStep {
-                    name,
-                    cmd: cmd.to_string(),
-                    status: Status::NotRun,
-                }
-            })
-            .collect();
-        Plan {
-            name: "default".to_string(),
-            commands: steps,
-        }
-    }
-}
+pub use event::AppEvent;
 
 fn setup_file_watcher(
     path: PathBuf,
@@ -400,75 +303,6 @@ struct CommandResult {
     stderr: String,
     success: bool,
     exit_code: Option<i32>,
-}
-
-// Cargo JSON message format models
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "reason", rename_all = "kebab-case")]
-enum CargoMessage {
-    CompilerMessage {
-        message: DiagnosticMessage,
-        #[serde(default)]
-        target: Option<Target>,
-    },
-    CompilerArtifact {
-        #[serde(default)]
-        target: Option<Target>,
-        #[serde(default)]
-        filenames: Vec<String>,
-        #[serde(default)]
-        fresh: bool,
-    },
-    BuildScriptExecuted {
-        #[serde(default)]
-        package_id: String,
-    },
-    BuildFinished {
-        success: bool,
-    },
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct DiagnosticMessage {
-    /// The primary message (e.g., "unused variable: `x`")
-    message: String,
-    /// The level: "error", "warning", "note", "help", etc.
-    level: String,
-    /// ANSI-formatted rendered output
-    #[serde(default)]
-    rendered: Option<String>,
-    /// Spans showing where in the code the issue is
-    #[serde(default)]
-    spans: Vec<DiagnosticSpan>,
-    /// Child diagnostics (notes, help messages, etc.)
-    #[serde(default)]
-    children: Vec<DiagnosticMessage>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct DiagnosticSpan {
-    /// File path where the diagnostic points
-    #[serde(default)]
-    file_name: String,
-    /// Line number (1-indexed)
-    #[serde(default)]
-    line_start: usize,
-    /// Column number (1-indexed)
-    #[serde(default)]
-    column_start: usize,
-    /// Whether this is the primary span
-    #[serde(default)]
-    is_primary: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct Target {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    kind: Vec<String>,
 }
 
 impl App {
@@ -1207,11 +1041,6 @@ impl App {
             .split_whitespace()
             .map(|s| s.to_string())
             .collect();
-        if parts.is_empty() || command_str.contains(CUSTOM_COMMAND_PLACEHOLDER) {
-            self.add_output("Error: Empty command".to_string());
-            self.running = false;
-            return;
-        }
 
         let program = parts[0].clone();
         let mut args: Vec<String> = parts[1..].to_vec();
