@@ -616,8 +616,8 @@ impl App {
     }
 
     fn start_plan_editing<B: Backend>(&mut self, tui: &mut Tui<B>) -> Result<()> {
-        tui.stop();
-        tui.exit();
+        tui.stop()?;
+        tui.exit()?;
 
         let plan_text = self
             .current_plan
@@ -647,6 +647,7 @@ impl App {
         }
 
         tui.enter()?;
+        tui.clear()?;
         tui.start();
 
         Ok(())
