@@ -112,12 +112,13 @@ fn get_tab_color(idx: usize) -> Color {
     colors[idx % colors.len()]
 }
 
-fn get_status_indicator(status: &Status) -> &str {
+fn get_status_indicator(status: &Status) -> String {
     match status {
-        Status::NotRun => "",
-        Status::Running => "...",
-        Status::Warning => "!",
-        Status::Failure => "✗",
-        Status::Success => "✓",
+        Status::NotRun => "".to_string(),
+        Status::Running => "...".to_string(),
+        Status::Warning(n) => format!("{n}W"),
+        Status::Failure { warnings, failures } => format!("{failures}E {warnings}W"),
+        Status::Error => "Error".to_string(),
+        Status::Success => "✓".to_string(),
     }
 }

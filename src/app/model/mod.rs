@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use crate::app::model::cargo::CargoMessage;
+
 pub mod cargo;
 
 #[derive(Debug, Clone, Default)]
@@ -45,8 +47,9 @@ pub struct PlanStep {
 pub enum Status {
     NotRun,
     Running,
-    Warning,
-    Failure,
+    Error,
+    Warning(usize),
+    Failure { warnings: usize, failures: usize },
     Success,
 }
 
@@ -85,5 +88,20 @@ impl Display for DiagnosticDisplayMode {
 impl Default for DiagnosticDisplayMode {
     fn default() -> Self {
         Self::First
+    }
+}
+
+#[derive(Debug)]
+pub enum OutputLine {
+    Cargo(CargoMessage),
+    Other(String),
+}
+
+impl OutputLine {
+    pub fn render(&self, diagnostic_mode: &DiagnosticDisplayMode, is_first: bool) -> Vec<String> {
+        match self {
+            OutputLine::Cargo(cargo_message) => cargo_message.render(&diagnostic_mode, is_first),
+            OutputLine::Other(line) => vec![line.to_string()],
+        }
     }
 }

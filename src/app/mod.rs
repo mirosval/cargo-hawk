@@ -1,17 +1,17 @@
 use action::AppAction;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use crossterm::event::KeyCode;
-use model::cargo::CargoMessage;
 use model::DiagnosticDisplayMode;
 use model::Plan;
 use model::PlanStep;
 use model::Status;
+use model::cargo::CargoMessage;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
     prelude::Backend,
     widgets::ListState,
-    Frame,
 };
 use std::{path::PathBuf, process::Stdio, sync::Arc};
 use tokio::sync::Mutex;
@@ -21,6 +21,7 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 
+use crate::app::model::OutputLine;
 use crate::{Args, Tui};
 
 mod action;
@@ -70,7 +71,7 @@ pub struct App {
     plans: Vec<Plan>,
     current_plan: Plan,
     selected: ListState,
-    output: Vec<String>,
+    output: Vec<OutputLine>,
     last_file_changed: Option<String>,
     running: bool,
     scroll_offset: u16,
@@ -151,7 +152,9 @@ impl App {
             plans,
             current_plan,
             selected,
-            output: vec!["Watching for file changes...".to_string()],
+            output: vec![OutputLine::Other(
+                "Watching for file changes...".to_string(),
+            )],
             last_file_changed: None,
             running: false,
             scroll_offset: 0,
@@ -297,7 +300,10 @@ impl App {
             AppEvent::Render => None,
             AppEvent::FileChanged(path) => {
                 self.last_file_changed = Some(path.display().to_string());
-                self.add_output(format!("File changed: {}", path.display()));
+                self.add_output(OutputLine::Other(format!(
+                    "File changed: {}",
+                    path.display()
+                )));
                 self.reset_all_steps();
 
                 // If auto mode is on, start from the first step in the plan
@@ -556,7 +562,7 @@ impl App {
         None
     }
 
-    fn add_output(&mut self, line: String) {
+    fn add_output(&mut self, line: OutputLine) {
         self.output.push(line);
     }
 
@@ -572,28 +578,12 @@ impl App {
         if let Some(msg) = CargoMessage::parse(line) {
             // Successfully parsed as cargo message
             self.cargo_messages.push(msg.clone());
-
-            // Determine if we should show full diagnostic
-            let show_full = if msg.is_compiler_diagnostic() {
-                // Show full for first diagnostic, summary only for subsequent ones
-                let show = !self.first_diagnostic_shown;
-                self.first_diagnostic_shown = true;
-                show
-            } else {
-                // Non-diagnostic messages always show in full (if they show at all)
-                true
-            };
-
-            // Render the message instead of showing raw JSON
-            let rendered_lines = msg.render(&self.diagnostic_display_mode, show_full);
-            for rendered_line in rendered_lines {
-                self.add_output(rendered_line);
-            }
+            self.add_output(OutputLine::Cargo(msg));
             return;
         }
 
         // Not a JSON message, add as-is
-        self.add_output(line.to_string());
+        self.add_output(OutputLine::Other(line.to_string()));
     }
 
     pub fn start_command(&mut self) -> Option<AppAction> {
@@ -712,25 +702,53 @@ impl App {
                             }
                         });
 
+                        let warnings = self
+                            .cargo_messages
+                            .iter()
+                            .map(|msg| {
+                                if let CargoMessage::CompilerMessage { message, .. } = msg
+                                    && message.level == "warning"
+                                {
+                                    1
+                                } else {
+                                    0
+                                }
+                            })
+                            .sum();
+
+                        let failures = self
+                            .cargo_messages
+                            .iter()
+                            .map(|msg| {
+                                if let CargoMessage::CompilerMessage { message, .. } = msg
+                                    && message.level == "error"
+                                {
+                                    1
+                                } else {
+                                    0
+                                }
+                            })
+                            .sum();
+
                         if has_error || !result.success {
-                            Status::Failure
+                            Status::Failure { warnings, failures }
                         } else if has_warning {
-                            Status::Warning
+                            Status::Warning(warnings)
                         } else {
                             Status::Success
                         }
                     }
                     Ok(Err(e)) => {
-                        self.add_output(format!("Error: {}", e));
-                        Status::Failure
+                        self.add_output(OutputLine::Other(format!("Error: {}", e)));
+                        Status::Error
                     }
                     Err(e) => {
                         if e.is_cancelled() {
-                            self.add_output("Command was cancelled".to_string());
+                            self.add_output(OutputLine::Other("Command was cancelled".to_string()));
                         } else {
-                            self.add_output(format!("Task error: {}", e));
+                            self.add_output(OutputLine::Other(format!("Task error: {}", e)));
                         }
-                        Status::Failure
+                        Status::Error
                     }
                 };
 
@@ -742,7 +760,7 @@ impl App {
                 self.running = false;
 
                 // Auto-advance to next step if in auto mode and current step succeeded or has warnings
-                if self.auto_mode && matches!(final_status, Status::Success | Status::Warning) {
+                if self.auto_mode && matches!(final_status, Status::Success | Status::Warning(_)) {
                     if let Some(next_step_idx) = self.get_next_step_in_plan() {
                         self.selected.select(Some(next_step_idx));
                         self.update_cursor_for_current_input();

@@ -55,12 +55,12 @@ impl Widget for &App {
             .selected_tab(selected_idx)
             .auto_mode(self.auto_mode)
             .build()
-            .render(chunks[1], buf);
+            .render(chunks[0], buf);
 
         // Output panel - positioned right after separator
         let output_area = ratatui::layout::Rect {
             x: chunks[1].x,
-            y: chunks[0].y + chunks[0].height + 2,
+            y: chunks[0].y + chunks[0].height,
             width: chunks[1].width,
             height: chunks[1].height.saturating_sub(1),
         };
@@ -69,6 +69,8 @@ impl Widget for &App {
         let visible_output: Vec<Line> = self
             .output
             .iter()
+            .enumerate()
+            .flat_map(|(idx, line)| line.render(&self.diagnostic_display_mode, idx == 0))
             .map(|line| {
                 // Parse ANSI codes and convert to styled text
                 match line.as_bytes().into_text() {
