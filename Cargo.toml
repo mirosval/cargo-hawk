@@ -19,6 +19,7 @@ tokio-util = "0.7.17"
 futures = "0.3.31"
 color-eyre = "0.6.5"
 signal-hook = "0.3.18"
+bon = "3.8.1"
 
 [dev-dependencies]
 insta = { version = "1.43.2", features = ["yaml"] }
