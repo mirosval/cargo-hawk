@@ -1,19 +1,15 @@
-use ansi_to_tui::IntoText;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 use crate::{
     App,
-    app::{
-        model::Status,
-        widgets::{
-            footer::Footer,
-            header::{Header, HeaderTab},
-        },
+    app::widgets::{
+        footer::Footer,
+        header::{Header, HeaderTab},
+        output::Output,
     },
 };
 
@@ -33,11 +29,11 @@ impl Widget for &App {
             .split(area);
 
         let selected_idx = self.selected.selected().unwrap_or(0);
-        let plan = self.plans.get(0);
+        let plan = self.plans.first();
 
         let tabs = plan
             .map(|plan| plan.commands.clone())
-            .unwrap_or(vec![])
+            .unwrap_or_default()
             .into_iter()
             .enumerate()
             .map(|(id, step)| {
@@ -57,43 +53,12 @@ impl Widget for &App {
             .build()
             .render(chunks[0], buf);
 
-        // Output panel - positioned right after separator
-        let output_area = ratatui::layout::Rect {
-            x: chunks[1].x,
-            y: chunks[0].y + chunks[0].height,
-            width: chunks[1].width,
-            height: chunks[1].height,
-        };
-
-        // Parse ANSI color codes in the output
-        let visible_output: Vec<Line> = self
-            .output
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, line)| line.render(&self.diagnostic_display_mode, idx == 0))
-            .map(|line| {
-                // Parse ANSI codes and convert to styled text
-                match line.as_bytes().into_text() {
-                    Ok(text) => {
-                        // Extract the first line from the parsed text
-                        if text.lines.is_empty() {
-                            Line::from("")
-                        } else {
-                            text.lines[0].clone()
-                        }
-                    }
-                    Err(_) => Line::from(line.clone()),
-                }
-            })
-            .collect();
-
-        let output_panel = Paragraph::new(visible_output)
-            .style(Style::default().bg(Color::Black))
-            .block(Block::default().borders(Borders::NONE))
-            .wrap(Wrap { trim: false })
-            .scroll((self.scroll_offset, 0));
-
-        output_panel.render(output_area, buf);
+        Output::builder()
+            .diagnostic_display_mode(&self.diagnostic_display_mode)
+            .scroll_offset(self.scroll_offset)
+            .output(&self.output)
+            .build()
+            .render(chunks[1], buf);
 
         // Input field with focus indicator
         let input_text = &self.command_inputs[selected_idx];

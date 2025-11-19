@@ -22,6 +22,7 @@ use tokio::{
 };
 
 use crate::app::model::OutputLine;
+use crate::app::model::cargo::DiagnosticLevel;
 use crate::{Args, Tui};
 
 mod action;
@@ -37,13 +38,13 @@ fn setup_file_watcher(
 ) -> Result<RecommendedWatcher> {
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                if event.kind.is_modify() || event.kind.is_create() {
-                    for path in event.paths {
-                        if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                            let _ = event_tx.send(AppEvent::FileChanged(path));
-                            break;
-                        }
+            if let Ok(event) = res
+                && (event.kind.is_modify() || event.kind.is_create())
+            {
+                for path in event.paths {
+                    if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                        let _ = event_tx.send(AppEvent::FileChanged(path));
+                        break;
                     }
                 }
             }
@@ -60,7 +61,6 @@ struct CommandResult {
     stdout: String,
     stderr: String,
     success: bool,
-    exit_code: Option<i32>,
 }
 
 #[derive(Debug)]
@@ -91,7 +91,6 @@ impl App {
     pub fn new(args: Args) -> Result<Self> {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         let current_plan = Plan {
-            name: "default".to_string(),
             commands: vec![
                 PlanStep {
                     name: "check".to_string(),
@@ -121,7 +120,6 @@ impl App {
                 .to_string();
 
             plans.push(Plan {
-                name: "custom".to_string(),
                 commands: vec![PlanStep {
                     name,
                     cmd,
@@ -240,25 +238,15 @@ impl App {
                     Some(AppAction::CancelCommand)
                 } else if self.input_focused {
                     // FOCUSED MODE - editing command input
-                    // match key.code {
-                    //     KeyCode::Esc => {
-                    //         self.input_focused = false;
-                    //         None;
-                    //     }
-                    //     KeyCode::Enter => {
-                    //         self.input_focused = false;
-                    //         // self.start_command();
-                    //         Some(AppAction::StartCommand);
-                    //     }
-                    //     KeyCode::Backspace => self.input_delete_char(),
-                    //     KeyCode::Left => self.input_move_cursor_left(),
-                    //     KeyCode::Right => self.input_move_cursor_right(),
-                    //     KeyCode::Home => self.input_move_cursor_home(),
-                    //     KeyCode::End => self.input_move_cursor_end(),
-                    //     KeyCode::Char(c) => self.input_insert_char(c),
-                    //     _ => None,
-                    // }
-                    None
+                    match key.code {
+                        KeyCode::Esc => Some(AppAction::ExitCommandEditMode),
+                        KeyCode::Enter => Some(AppAction::EnterCommandEditMode),
+                        KeyCode::Backspace => Some(AppAction::CommandEditModeBackspace),
+                        KeyCode::Left => Some(AppAction::CommandEditModeLeft),
+                        KeyCode::Right => Some(AppAction::CommandEditModeRight),
+                        KeyCode::Char(c) => Some(AppAction::CommandEditModeChar(c)),
+                        _ => None,
+                    }
                 } else {
                     // UNFOCUSED MODE - navigation
                     match key.code {
@@ -307,11 +295,11 @@ impl App {
                 self.reset_all_steps();
 
                 // If auto mode is on, start from the first step in the plan
-                if self.auto_mode {
-                    if let Some(first_step_idx) = self.get_first_step_in_plan() {
-                        self.selected.select(Some(first_step_idx));
-                        self.update_cursor_for_current_input();
-                    }
+                if self.auto_mode
+                    && let Some(first_step_idx) = self.get_first_step_in_plan()
+                {
+                    self.selected.select(Some(first_step_idx));
+                    self.update_cursor_for_current_input();
                 }
 
                 self.start_command();
@@ -334,6 +322,30 @@ impl App {
             AppAction::ToggleAuto => self.toggle_auto(),
             AppAction::SwitchTab(idx) => self.switch_to_tab(idx),
             AppAction::CycleDiagnosticMode => self.cycle_diagnostic_mode(),
+            AppAction::EnterCommandEditMode => {
+                self.input_focused = true;
+                None
+            }
+            AppAction::ExitCommandEditMode => {
+                self.input_focused = false;
+                Some(AppAction::StartCommand)
+            }
+            AppAction::CommandEditModeBackspace => {
+                self.input_delete_char();
+                None
+            }
+            AppAction::CommandEditModeLeft => {
+                self.input_move_cursor_left();
+                None
+            }
+            AppAction::CommandEditModeRight => {
+                self.input_move_cursor_right();
+                None
+            }
+            AppAction::CommandEditModeChar(c) => {
+                self.input_insert_char(c);
+                None
+            }
         }
     }
 
@@ -486,7 +498,7 @@ impl App {
 
         tui.enter()?;
         tui.clear()?;
-        tui.start();
+        tui.start()?;
 
         Ok(())
     }
@@ -527,15 +539,6 @@ impl App {
         }
     }
 
-    fn input_move_cursor_home(&mut self) {
-        self.input_cursor = 0;
-    }
-
-    fn input_move_cursor_end(&mut self) {
-        let idx = self.selected.selected().unwrap_or(0);
-        self.input_cursor = self.command_inputs[idx].len();
-    }
-
     fn scroll_up(&mut self) -> Option<AppAction> {
         if self.scroll_offset > 0 {
             self.scroll_offset -= 1;
@@ -551,12 +554,12 @@ impl App {
     fn toggle_auto(&mut self) -> Option<AppAction> {
         self.auto_mode = !self.auto_mode;
         // If turning on auto mode, start from first non-successful step
-        if self.auto_mode {
-            if let Some(first_step_idx) = self.get_first_non_successful_step_in_plan() {
-                self.selected.select(Some(first_step_idx));
-                self.update_cursor_for_current_input();
-                self.start_command();
-            }
+        if self.auto_mode
+            && let Some(first_step_idx) = self.get_first_non_successful_step_in_plan()
+        {
+            self.selected.select(Some(first_step_idx));
+            self.update_cursor_for_current_input();
+            self.start_command();
             // Note: auto mode stays on even if all steps are already successful
         }
         None
@@ -662,7 +665,6 @@ impl App {
                 stdout,
                 stderr,
                 success: output.status.success(),
-                exit_code: output.status.code(),
             })
         });
 
@@ -671,103 +673,104 @@ impl App {
     }
 
     async fn check_command_completion(&mut self) {
-        if let Some(task) = &mut self.running_task {
-            if task.is_finished() {
-                let task = self.running_task.take().unwrap();
+        if let Some(task) = &mut self.running_task
+            && task.is_finished()
+        {
+            let task = self.running_task.take().unwrap();
 
-                // Get the result (this won't block since it's finished)
-                let final_status = match task.await {
-                    Ok(Ok(result)) => {
-                        for line in result.stdout.lines() {
-                            self.process_output_line(line);
-                        }
-                        for line in result.stderr.lines() {
-                            self.process_output_line(line);
-                        }
+            // Get the result (this won't block since it's finished)
+            let final_status = match task.await {
+                Ok(Ok(result)) => {
+                    for line in result.stdout.lines() {
+                        self.process_output_line(line);
+                    }
+                    for line in result.stderr.lines() {
+                        self.process_output_line(line);
+                    }
 
-                        // Determine status based on cargo messages
-                        let has_error = self.cargo_messages.iter().any(|msg| {
-                            if let CargoMessage::CompilerMessage { message, .. } = msg {
-                                message.level == "error"
-                            } else {
-                                false
-                            }
-                        });
-
-                        let has_warning = self.cargo_messages.iter().any(|msg| {
-                            if let CargoMessage::CompilerMessage { message, .. } = msg {
-                                message.level == "warning"
-                            } else {
-                                false
-                            }
-                        });
-
-                        let warnings = self
-                            .cargo_messages
-                            .iter()
-                            .map(|msg| {
-                                if let CargoMessage::CompilerMessage { message, .. } = msg
-                                    && message.level == "warning"
-                                {
-                                    1
-                                } else {
-                                    0
-                                }
-                            })
-                            .sum();
-
-                        let failures = self
-                            .cargo_messages
-                            .iter()
-                            .map(|msg| {
-                                if let CargoMessage::CompilerMessage { message, .. } = msg
-                                    && message.level == "error"
-                                {
-                                    1
-                                } else {
-                                    0
-                                }
-                            })
-                            .sum();
-
-                        if has_error || !result.success {
-                            Status::Failure { warnings, failures }
-                        } else if has_warning {
-                            Status::Warning(warnings)
+                    // Determine status based on cargo messages
+                    let has_error = self.cargo_messages.iter().any(|msg| {
+                        if let CargoMessage::CompilerMessage { message, .. } = msg {
+                            message.level == DiagnosticLevel::Error
                         } else {
-                            Status::Success
+                            false
                         }
-                    }
-                    Ok(Err(e)) => {
-                        self.add_output(OutputLine::Other(format!("Error: {}", e)));
-                        Status::Error
-                    }
-                    Err(e) => {
-                        if e.is_cancelled() {
-                            self.add_output(OutputLine::Other("Command was cancelled".to_string()));
+                    });
+
+                    let has_warning = self.cargo_messages.iter().any(|msg| {
+                        if let CargoMessage::CompilerMessage { message, .. } = msg {
+                            message.level == DiagnosticLevel::Warning
                         } else {
-                            self.add_output(OutputLine::Other(format!("Task error: {}", e)));
+                            false
                         }
-                        Status::Error
+                    });
+
+                    let warnings = self
+                        .cargo_messages
+                        .iter()
+                        .map(|msg| {
+                            if let CargoMessage::CompilerMessage { message, .. } = msg
+                                && message.level == DiagnosticLevel::Warning
+                            {
+                                1
+                            } else {
+                                0
+                            }
+                        })
+                        .sum();
+
+                    let failures = self
+                        .cargo_messages
+                        .iter()
+                        .map(|msg| {
+                            if let CargoMessage::CompilerMessage { message, .. } = msg
+                                && message.level == DiagnosticLevel::Error
+                            {
+                                1
+                            } else {
+                                0
+                            }
+                        })
+                        .sum();
+
+                    if has_error || !result.success {
+                        Status::Failure { warnings, failures }
+                    } else if has_warning {
+                        Status::Warning(warnings)
+                    } else {
+                        Status::Success
                     }
-                };
-
-                // Update the status of the selected step
-                if let Some(step) = self.get_selected_step_mut() {
-                    step.status = final_status.clone();
                 }
-
-                self.running = false;
-
-                // Auto-advance to next step if in auto mode and current step succeeded or has warnings
-                if self.auto_mode && matches!(final_status, Status::Success | Status::Warning(_)) {
-                    if let Some(next_step_idx) = self.get_next_step_in_plan() {
-                        self.selected.select(Some(next_step_idx));
-                        self.update_cursor_for_current_input();
-                        self.start_command();
+                Ok(Err(e)) => {
+                    self.add_output(OutputLine::Other(format!("Error: {}", e)));
+                    Status::Error
+                }
+                Err(e) => {
+                    if e.is_cancelled() {
+                        self.add_output(OutputLine::Other("Command was cancelled".to_string()));
+                    } else {
+                        self.add_output(OutputLine::Other(format!("Task error: {}", e)));
                     }
-                    // Note: auto mode stays on even when reaching end of plan
+                    Status::Error
                 }
+            };
+
+            // Update the status of the selected step
+            if let Some(step) = self.get_selected_step_mut() {
+                step.status = final_status.clone();
+            }
+
+            self.running = false;
+
+            // Auto-advance to next step if in auto mode and current step succeeded or has warnings
+            if self.auto_mode
+                && matches!(final_status, Status::Success | Status::Warning(_))
+                && let Some(next_step_idx) = self.get_next_step_in_plan()
+            {
+                self.selected.select(Some(next_step_idx));
+                self.update_cursor_for_current_input();
+                self.start_command();
+                // Note: auto mode stays on even when reaching end of plan
             }
         }
     }

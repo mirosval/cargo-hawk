@@ -74,20 +74,18 @@ impl CargoMessage {
                                 for line in rendered.lines() {
                                     output.push(line.to_string());
                                 }
-                            } else {
-                                if let Some(first_line) = rendered.lines().next() {
-                                    let span = message
-                                        .spans
-                                        .first()
-                                        .map(|span| {
-                                            format!(
-                                                "{}:{}:{}",
-                                                span.file_name, span.line_start, span.column_start
-                                            )
-                                        })
-                                        .unwrap_or("".to_string());
-                                    output.push(format!("{first_line} {span}"));
-                                }
+                            } else if let Some(first_line) = rendered.lines().next() {
+                                let span = message
+                                    .spans
+                                    .first()
+                                    .map(|span| {
+                                        format!(
+                                            "{}:{}:{}",
+                                            span.file_name, span.line_start, span.column_start
+                                        )
+                                    })
+                                    .unwrap_or("".to_string());
+                                output.push(format!("{first_line} {span}"));
                             }
                         }
                         DiagnosticDisplayMode::Full => {
@@ -99,12 +97,12 @@ impl CargoMessage {
                     }
                 } else {
                     // Fallback: manually format the message
-                    let level_prefix = match message.level.as_str() {
-                        "error" => "error",
-                        "warning" => "warning",
-                        "note" => "note",
-                        "help" => "help",
-                        _ => &message.level,
+                    let level_prefix = match message.level {
+                        DiagnosticLevel::Error => "error",
+                        DiagnosticLevel::Warning => "warning",
+                        DiagnosticLevel::Note => "note",
+                        DiagnosticLevel::Help => "help",
+                        _ => "",
                     };
 
                     if let Some(target) = target {
@@ -117,13 +115,13 @@ impl CargoMessage {
                     }
 
                     // Add file location in Summary mode
-                    if matches!(mode, DiagnosticDisplayMode::Summary) {
-                        if let Some(span) = message.spans.iter().find(|s| s.is_primary) {
-                            output.push(format!(
-                                "  --> {}:{}:{}",
-                                span.file_name, span.line_start, span.column_start
-                            ));
-                        }
+                    if matches!(mode, DiagnosticDisplayMode::Summary)
+                        && let Some(span) = message.spans.iter().find(|s| s.is_primary)
+                    {
+                        output.push(format!(
+                            "  --> {}:{}:{}",
+                            span.file_name, span.line_start, span.column_start
+                        ));
                     }
                 }
 
@@ -154,7 +152,7 @@ pub struct DiagnosticMessage {
     /// The primary message (e.g., "unused variable: `x`")
     pub message: String,
     /// The level: "error", "warning", "note", "help", etc.
-    pub level: String,
+    pub level: DiagnosticLevel,
     /// ANSI-formatted rendered output
     #[serde(default)]
     pub rendered: Option<String>,
@@ -180,6 +178,17 @@ pub struct DiagnosticSpan {
     /// Whether this is the primary span
     #[serde(default)]
     pub is_primary: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticLevel {
+    Error,
+    Warning,
+    Note,
+    Help,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

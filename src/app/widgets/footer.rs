@@ -19,7 +19,7 @@ impl Widget for &Footer {
     {
         // Footer with mode-specific shortcuts
         let footer_text = if self.input_focused {
-            format!("Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit")
+            "Esc: Exit edit mode | Enter: Run | ←/→/Home/End: Navigate | Ctrl+C: Quit".to_string()
         } else {
             format!(
                 "q/Esc: Quit | i: Edit command | p: Edit plan | Enter/r: Run | a: Auto advance | 1-9: Switch tab | j/k/↑/↓: Scroll | s: Diag ({diag})",

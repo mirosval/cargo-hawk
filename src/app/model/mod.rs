@@ -6,7 +6,6 @@ pub mod cargo;
 
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
-    pub name: String,
     pub commands: Vec<PlanStep>,
 }
 
@@ -14,7 +13,6 @@ impl Plan {
     pub fn from_string(s: &str) -> Plan {
         let steps: Vec<PlanStep> = s
             .split("\n")
-            .into_iter()
             .filter(|step| step.trim() != "")
             .map(|cmd| {
                 let name = cmd
@@ -29,10 +27,7 @@ impl Plan {
                 }
             })
             .collect();
-        Plan {
-            name: "default".to_string(),
-            commands: steps,
-        }
+        Plan { commands: steps }
     }
 }
 
@@ -53,9 +48,10 @@ pub enum Status {
     Success,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum DiagnosticDisplayMode {
     Summary,
+    #[default]
     First,
     Full,
 }
@@ -85,12 +81,6 @@ impl Display for DiagnosticDisplayMode {
     }
 }
 
-impl Default for DiagnosticDisplayMode {
-    fn default() -> Self {
-        Self::First
-    }
-}
-
 #[derive(Debug)]
 pub enum OutputLine {
     Cargo(CargoMessage),
@@ -100,7 +90,7 @@ pub enum OutputLine {
 impl OutputLine {
     pub fn render(&self, diagnostic_mode: &DiagnosticDisplayMode, is_first: bool) -> Vec<String> {
         match self {
-            OutputLine::Cargo(cargo_message) => cargo_message.render(&diagnostic_mode, is_first),
+            OutputLine::Cargo(cargo_message) => cargo_message.render(diagnostic_mode, is_first),
             OutputLine::Other(line) => vec![line.to_string()],
         }
     }

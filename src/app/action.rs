@@ -8,4 +8,10 @@ pub enum AppAction {
     ToggleAuto,
     SwitchTab(usize),
     CycleDiagnosticMode,
+    EnterCommandEditMode,
+    ExitCommandEditMode,
+    CommandEditModeBackspace,
+    CommandEditModeLeft,
+    CommandEditModeRight,
+    CommandEditModeChar(char),
 }
