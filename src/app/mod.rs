@@ -623,27 +623,31 @@ impl App {
 #[cfg(test)]
 mod tests {
     use insta::assert_snapshot;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     use testresult::TestResult;
 
     use super::*;
 
     #[test]
     fn test_first_screen() -> TestResult {
-        // let app = App::new(None);
-        // let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
-        // terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
-        // assert_snapshot!(terminal.backend());
+        let app = App::new(Args {
+            path: PathBuf::from("."),
+        })?;
+        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
+        terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
+        assert_snapshot!(terminal.backend());
         Ok(())
     }
 
     #[test]
     fn test_auto_disabled() -> TestResult {
-        // let mut app = App::new(None);
-        // app.auto_mode = false;
-        // let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
-        // terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
-        // assert_snapshot!(terminal.backend());
+        let mut app = App::new(Args {
+            path: PathBuf::from("."),
+        })?;
+        app.auto_mode = false;
+        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
+        terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
+        assert_snapshot!(terminal.backend());
         Ok(())
     }
 }

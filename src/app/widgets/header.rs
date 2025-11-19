@@ -124,3 +124,38 @@ fn get_status_indicator(exec: &PlanStepExecution) -> String {
         PlanStepExecution::Success { .. } => "✓".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+    use ratatui::{Terminal, backend::TestBackend};
+    use testresult::TestResult;
+
+    use super::*;
+
+    #[test]
+    fn test_header() -> TestResult {
+        let tab1 = HeaderTab::builder()
+            .id(0)
+            .name("tab 1")
+            .exec(&PlanStepExecution::NotRun)
+            .selected(true)
+            .build();
+        let tab2 = HeaderTab::builder()
+            .id(1)
+            .name("tab 2")
+            .exec(&PlanStepExecution::NotRun)
+            .selected(true)
+            .build();
+        let tabs = vec![tab1, tab2];
+        let header = Header::builder()
+            .tabs(tabs)
+            .selected_tab(0)
+            .auto_mode(true)
+            .build();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
+        terminal.draw(|frame| frame.render_widget(&header, frame.area()))?;
+        assert_snapshot!(terminal.backend());
+        Ok(())
+    }
+}
