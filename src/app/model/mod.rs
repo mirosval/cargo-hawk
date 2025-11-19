@@ -1,12 +1,7 @@
-use color_eyre::eyre::Result;
-use std::{
-    fmt::Display,
-    sync::{Arc, Mutex},
-};
-
-use tokio::{process::Child, task::JoinHandle};
-
 use crate::app::{CommandResult, model::cargo::CargoMessage};
+use color_eyre::eyre::Result;
+use std::fmt::Display;
+use tokio::task::JoinHandle;
 
 pub mod cargo;
 
@@ -65,16 +60,6 @@ pub enum PlanStepExecution {
     Success {
         output: Vec<OutputLine>,
     },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Status {
-    NotRun,
-    Running,
-    Error,
-    Warning(usize),
-    Failure { warnings: usize, failures: usize },
-    Success,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]

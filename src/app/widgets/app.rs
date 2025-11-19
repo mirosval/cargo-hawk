@@ -58,7 +58,7 @@ impl Widget for &App {
         let output = match &self.plan.commands[selected_idx].exec {
             PlanStepExecution::NotRun => &vec![OutputLine::Other("Not started".to_string())],
             PlanStepExecution::Running { .. } => &vec![OutputLine::Other("Running...".to_string())],
-            PlanStepExecution::Error { output } => &output,
+            PlanStepExecution::Error { output } => output,
             PlanStepExecution::Warning { output, .. } => output,
             PlanStepExecution::Failure { output, .. } => output,
             PlanStepExecution::Success { output } => output,

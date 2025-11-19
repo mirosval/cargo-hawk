@@ -1,10 +1,9 @@
 use action::AppAction;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use model::DiagnosticDisplayMode;
 use model::Plan;
 use model::PlanStep;
-use model::Status;
 use model::cargo::CargoMessage;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
@@ -13,11 +12,9 @@ use ratatui::{
     prelude::Backend,
     widgets::ListState,
 };
-use std::{path::PathBuf, process::Stdio, sync::Arc};
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
+use std::{path::PathBuf, process::Stdio};
 use tokio::{
-    process::{Child, Command},
+    process::Command,
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 
@@ -58,7 +55,7 @@ fn setup_file_watcher(
 }
 
 #[derive(Debug)]
-struct CommandResult {
+pub struct CommandResult {
     stdout: String,
     stderr: String,
     success: bool,
@@ -565,7 +562,7 @@ impl App {
                         })
                         .sum();
 
-                    let result = match (n_warnings, n_errors, result.success) {
+                    match (n_warnings, n_errors, result.success) {
                         (0, 0, true) => PlanStepExecution::Success { output: lines },
                         (0, 0, false) => PlanStepExecution::Error { output: lines },
                         (1.., 0, _) => PlanStepExecution::Warning {
@@ -577,9 +574,7 @@ impl App {
                             failures: n_errors,
                             output: lines,
                         },
-                    };
-
-                    result
+                    }
                 }
                 Ok(Err(e)) => {
                     let output = vec![OutputLine::Other(format!("Error: {}", e))];
