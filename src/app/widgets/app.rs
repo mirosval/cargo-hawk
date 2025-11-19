@@ -29,18 +29,17 @@ impl Widget for &App {
             .split(area);
 
         let selected_idx = self.selected.selected().unwrap_or(0);
-        let plan = self.plans.first();
 
-        let tabs = plan
-            .map(|plan| plan.commands.clone())
-            .unwrap_or_default()
-            .into_iter()
+        let tabs = self
+            .plan
+            .commands
+            .iter()
             .enumerate()
             .map(|(id, step)| {
                 HeaderTab::builder()
                     .id(id)
-                    .name(step.name)
-                    .status(step.status)
+                    .name(&step.name)
+                    .status(&step.status)
                     .selected(id == selected_idx)
                     .build()
             })

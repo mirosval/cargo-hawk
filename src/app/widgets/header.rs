@@ -8,13 +8,13 @@ use ratatui::{
 use crate::app::model::Status;
 
 #[derive(Debug, Builder)]
-pub struct Header {
-    tabs: Vec<HeaderTab>,
+pub struct Header<'a> {
+    tabs: Vec<HeaderTab<'a>>,
     selected_tab: usize,
     auto_mode: bool,
 }
 
-impl Widget for &Header {
+impl<'a> Widget for &Header<'a> {
     fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
     where
         Self: Sized,
@@ -70,18 +70,18 @@ impl Widget for &Header {
 }
 
 #[derive(Debug, Builder)]
-pub struct HeaderTab {
+pub struct HeaderTab<'a> {
     id: usize,
-    name: String,
-    status: Status,
+    name: &'a str,
+    status: &'a Status,
     selected: bool,
 }
 
-impl HeaderTab {
-    fn span<'a>(&'a self) -> Span<'a> {
-        let status_indicator = get_status_indicator(&self.status);
+impl<'a> HeaderTab<'a> {
+    fn span(&self) -> Span<'a> {
+        let status_indicator = get_status_indicator(self.status);
         let step_idx = self.id;
-        let name = self.name.as_str();
+        let name = self.name;
         let tab_text = if status_indicator.is_empty() {
             format!(" {} {} ", step_idx + 1, name)
         } else {

@@ -68,8 +68,7 @@ pub struct App {
     event_rx: UnboundedReceiver<AppEvent>,
     event_tx: UnboundedSender<AppEvent>,
     _file_watcher: RecommendedWatcher,
-    plans: Vec<Plan>,
-    current_plan: Plan,
+    plan: Plan,
     selected: ListState,
     output: Vec<OutputLine>,
     last_file_changed: Option<String>,
@@ -90,7 +89,7 @@ pub struct App {
 impl App {
     pub fn new(args: Args) -> Result<Self> {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-        let current_plan = Plan {
+        let plan = Plan {
             commands: vec![
                 PlanStep {
                     name: "check".to_string(),
@@ -109,33 +108,13 @@ impl App {
                 },
             ],
         };
-        let mut plans = vec![current_plan.clone()];
-
-        if let Some(cmd) = args.custom {
-            // Extract name from command (word after "cargo" if present)
-            let name = cmd
-                .strip_prefix("cargo ")
-                .and_then(|s| s.split_whitespace().next())
-                .unwrap_or("custom")
-                .to_string();
-
-            plans.push(Plan {
-                commands: vec![PlanStep {
-                    name,
-                    cmd,
-                    status: Status::NotRun,
-                }],
-            });
-        }
 
         let mut selected = ListState::default();
         selected.select(Some(0));
 
         // Initialize command inputs from all plan steps (flattened)
-        let command_inputs: Vec<String> = plans
-            .iter()
-            .flat_map(|p| p.commands.iter().map(|step| step.cmd.clone()))
-            .collect();
+        let command_inputs: Vec<String> =
+            plan.commands.iter().map(|step| step.cmd.clone()).collect();
         let input_cursor = if !command_inputs.is_empty() {
             command_inputs[0].len()
         } else {
@@ -147,8 +126,7 @@ impl App {
             event_rx,
             event_tx,
             _file_watcher: file_watcher,
-            plans,
-            current_plan,
+            plan,
             selected,
             output: vec![OutputLine::Other(
                 "Watching for file changes...".to_string(),
@@ -350,104 +328,40 @@ impl App {
     }
 
     fn total_steps(&self) -> usize {
-        self.plans.iter().map(|p| p.commands.len()).sum()
+        self.plan.commands.len()
     }
 
     fn get_selected_step_mut(&mut self) -> Option<&mut PlanStep> {
         let selected_idx = self.selected.selected()?;
-        let mut current_idx = 0;
-        for plan in &mut self.plans {
-            for step in &mut plan.commands {
-                if current_idx == selected_idx {
-                    return Some(step);
-                }
-                current_idx += 1;
-            }
-        }
-        None
+        self.plan.commands.get_mut(selected_idx)
     }
 
     fn reset_all_steps(&mut self) {
-        for plan in &mut self.plans {
-            for step in &mut plan.commands {
-                step.status = Status::NotRun;
-            }
+        for step in &mut self.plan.commands {
+            step.status = Status::NotRun;
         }
-    }
-
-    fn get_plan_and_step_index(&self, global_idx: usize) -> Option<(usize, usize)> {
-        let mut current_idx = 0;
-        for (plan_idx, plan) in self.plans.iter().enumerate() {
-            for step_idx in 0..plan.commands.len() {
-                if current_idx == global_idx {
-                    return Some((plan_idx, step_idx));
-                }
-                current_idx += 1;
-            }
-        }
-        None
     }
 
     fn get_next_step_in_plan(&self) -> Option<usize> {
-        let selected_idx = self.selected.selected()?;
-        let (plan_idx, step_idx) = self.get_plan_and_step_index(selected_idx)?;
-
-        // Check if there's a next step in the same plan
-        if step_idx + 1 < self.plans[plan_idx].commands.len() {
-            // Calculate the global index of the next step
-            let mut global_idx = 0;
-            for (p_idx, plan) in self.plans.iter().enumerate() {
-                if p_idx < plan_idx {
-                    global_idx += plan.commands.len();
-                } else if p_idx == plan_idx {
-                    global_idx += step_idx + 1;
-                    break;
-                }
-            }
-            Some(global_idx)
-        } else {
-            None
-        }
+        let next = self.selected.selected()? + 1;
+        self.plan.commands.get(next).map(|_| next)
     }
 
     fn get_first_non_successful_step_in_plan(&self) -> Option<usize> {
-        let selected_idx = self.selected.selected()?;
-        let (plan_idx, _) = self.get_plan_and_step_index(selected_idx)?;
-
-        // Find the first step in the current plan that is not successful
-        let plan = &self.plans[plan_idx];
-        for (step_idx, step) in plan.commands.iter().enumerate() {
+        for (step_idx, step) in self.plan.commands.iter().enumerate() {
             if step.status != Status::Success {
-                // Calculate the global index of this step
-                let mut global_idx = 0;
-                for (p_idx, p) in self.plans.iter().enumerate() {
-                    if p_idx < plan_idx {
-                        global_idx += p.commands.len();
-                    } else if p_idx == plan_idx {
-                        global_idx += step_idx;
-                        break;
-                    }
-                }
-                return Some(global_idx);
+                return Some(step_idx);
             }
         }
         None
     }
 
     fn get_first_step_in_plan(&self) -> Option<usize> {
-        let selected_idx = self.selected.selected()?;
-        let (plan_idx, _) = self.get_plan_and_step_index(selected_idx)?;
-
-        // Calculate the global index of the first step in the current plan
-        let mut global_idx = 0;
-        for (p_idx, p) in self.plans.iter().enumerate() {
-            if p_idx < plan_idx {
-                global_idx += p.commands.len();
-            } else if p_idx == plan_idx {
-                break;
-            }
+        if !self.plan.commands.is_empty() {
+            Some(1)
+        } else {
+            None
         }
-        Some(global_idx)
     }
 
     fn switch_to_tab(&mut self, idx: usize) -> Option<AppAction> {
@@ -470,7 +384,7 @@ impl App {
         tui.exit()?;
 
         let plan_text = self
-            .current_plan
+            .plan
             .commands
             .iter()
             .map(|step| step.cmd.to_string())
@@ -479,13 +393,13 @@ impl App {
         let edited_plan = edit::edit(plan_text.trim()).unwrap();
         let new_plan = Plan::from_string(&edited_plan);
 
-        self.current_plan = new_plan.clone();
-        self.plans = vec![new_plan];
+        self.plan = new_plan.clone();
         // Rebuild command_inputs for all plans
         self.command_inputs = self
-            .plans
+            .plan
+            .commands
             .iter()
-            .flat_map(|p| p.commands.iter().map(|step| step.cmd.clone()))
+            .map(|step| step.cmd.clone())
             .collect();
         if let Some(first_step_idx) = self.get_first_step_in_plan() {
             self.selected.select(Some(first_step_idx));
