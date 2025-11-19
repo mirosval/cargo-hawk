@@ -1,10 +1,16 @@
-use std::fmt::Display;
+use color_eyre::eyre::Result;
+use std::{
+    fmt::Display,
+    sync::{Arc, Mutex},
+};
 
-use crate::app::model::cargo::CargoMessage;
+use tokio::{process::Child, task::JoinHandle};
+
+use crate::app::{CommandResult, model::cargo::CargoMessage};
 
 pub mod cargo;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Plan {
     pub commands: Vec<PlanStep>,
 }
@@ -23,7 +29,7 @@ impl Plan {
                 PlanStep {
                     name,
                     cmd: cmd.to_string(),
-                    status: Status::NotRun,
+                    exec: PlanStepExecution::NotRun,
                 }
             })
             .collect();
@@ -31,11 +37,34 @@ impl Plan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct PlanStep {
     pub name: String,
     pub cmd: String,
-    pub status: Status,
+    pub exec: PlanStepExecution,
+}
+
+#[derive(Debug)]
+pub enum PlanStepExecution {
+    NotRun,
+    Running {
+        task: Option<JoinHandle<Result<CommandResult>>>,
+    },
+    Error {
+        output: Vec<OutputLine>,
+    },
+    Warning {
+        warnings: usize,
+        output: Vec<OutputLine>,
+    },
+    Failure {
+        warnings: usize,
+        failures: usize,
+        output: Vec<OutputLine>,
+    },
+    Success {
+        output: Vec<OutputLine>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

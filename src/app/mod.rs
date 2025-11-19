@@ -22,6 +22,7 @@ use tokio::{
 };
 
 use crate::app::model::OutputLine;
+use crate::app::model::PlanStepExecution;
 use crate::app::model::cargo::DiagnosticLevel;
 use crate::{Args, Tui};
 
@@ -70,14 +71,9 @@ pub struct App {
     _file_watcher: RecommendedWatcher,
     plan: Plan,
     selected: ListState,
-    output: Vec<OutputLine>,
     last_file_changed: Option<String>,
-    running: bool,
     scroll_offset: u16,
-    command_inputs: Vec<String>,
     input_cursor: usize,
-    running_task: Option<JoinHandle<Result<CommandResult>>>,
-    running_child: Arc<Mutex<Option<Child>>>,
     input_focused: bool,
     cargo_messages: Vec<CargoMessage>,
     first_diagnostic_shown: bool,
@@ -94,32 +90,23 @@ impl App {
                 PlanStep {
                     name: "check".to_string(),
                     cmd: "cargo check".to_string(),
-                    status: Status::NotRun,
+                    exec: PlanStepExecution::NotRun,
                 },
                 PlanStep {
                     name: "test".to_string(),
                     cmd: "cargo test".to_string(),
-                    status: Status::NotRun,
+                    exec: PlanStepExecution::NotRun,
                 },
                 PlanStep {
                     name: "clippy".to_string(),
                     cmd: "cargo clippy".to_string(),
-                    status: Status::NotRun,
+                    exec: PlanStepExecution::NotRun,
                 },
             ],
         };
 
         let mut selected = ListState::default();
         selected.select(Some(0));
-
-        // Initialize command inputs from all plan steps (flattened)
-        let command_inputs: Vec<String> =
-            plan.commands.iter().map(|step| step.cmd.clone()).collect();
-        let input_cursor = if !command_inputs.is_empty() {
-            command_inputs[0].len()
-        } else {
-            0
-        };
 
         let file_watcher = setup_file_watcher(args.path.clone(), event_tx.clone())?;
         Ok(Self {
@@ -128,16 +115,9 @@ impl App {
             _file_watcher: file_watcher,
             plan,
             selected,
-            output: vec![OutputLine::Other(
-                "Watching for file changes...".to_string(),
-            )],
             last_file_changed: None,
-            running: false,
             scroll_offset: 0,
-            command_inputs,
-            input_cursor,
-            running_task: None,
-            running_child: Arc::new(Mutex::new(None)),
+            input_cursor: 0,
             input_focused: false,
             cargo_messages: Vec::new(),
             first_diagnostic_shown: false,
@@ -266,10 +246,6 @@ impl App {
             AppEvent::Render => None,
             AppEvent::FileChanged(path) => {
                 self.last_file_changed = Some(path.display().to_string());
-                self.add_output(OutputLine::Other(format!(
-                    "File changed: {}",
-                    path.display()
-                )));
                 self.reset_all_steps();
 
                 // If auto mode is on, start from the first step in the plan
@@ -277,7 +253,6 @@ impl App {
                     && let Some(first_step_idx) = self.get_first_step_in_plan()
                 {
                     self.selected.select(Some(first_step_idx));
-                    self.update_cursor_for_current_input();
                 }
 
                 self.start_command();
@@ -301,6 +276,7 @@ impl App {
             AppAction::SwitchTab(idx) => self.switch_to_tab(idx),
             AppAction::CycleDiagnosticMode => self.cycle_diagnostic_mode(),
             AppAction::EnterCommandEditMode => {
+                self.update_cursor_for_current_input();
                 self.input_focused = true;
                 None
             }
@@ -338,7 +314,7 @@ impl App {
 
     fn reset_all_steps(&mut self) {
         for step in &mut self.plan.commands {
-            step.status = Status::NotRun;
+            step.exec = PlanStepExecution::NotRun;
         }
     }
 
@@ -349,7 +325,7 @@ impl App {
 
     fn get_first_non_successful_step_in_plan(&self) -> Option<usize> {
         for (step_idx, step) in self.plan.commands.iter().enumerate() {
-            if step.status != Status::Success {
+            if !matches!(step.exec, PlanStepExecution::Success { .. }) {
                 return Some(step_idx);
             }
         }
@@ -365,9 +341,8 @@ impl App {
     }
 
     fn switch_to_tab(&mut self, idx: usize) -> Option<AppAction> {
-        if !self.running && idx < self.total_steps() {
+        if idx < self.total_steps() {
             self.selected.select(Some(idx));
-            self.update_cursor_for_current_input();
             Some(AppAction::StartCommand)
         } else {
             None
@@ -391,19 +366,10 @@ impl App {
             .fold(String::new(), |acc, s| acc + "\n" + &s);
 
         let edited_plan = edit::edit(plan_text.trim()).unwrap();
-        let new_plan = Plan::from_string(&edited_plan);
 
-        self.plan = new_plan.clone();
-        // Rebuild command_inputs for all plans
-        self.command_inputs = self
-            .plan
-            .commands
-            .iter()
-            .map(|step| step.cmd.clone())
-            .collect();
+        self.plan = Plan::from_string(&edited_plan);
         if let Some(first_step_idx) = self.get_first_step_in_plan() {
             self.selected.select(Some(first_step_idx));
-            self.update_cursor_for_current_input();
 
             if self.auto_mode {
                 self.start_command();
@@ -419,24 +385,21 @@ impl App {
 
     fn update_cursor_for_current_input(&mut self) {
         let idx = self.selected.selected().unwrap_or(0);
-        self.input_cursor = self.command_inputs[idx].len();
+        self.input_cursor = self.plan.commands[idx].cmd.len();
     }
 
     fn input_insert_char(&mut self, c: char) {
-        if self.running {
-            return;
-        }
         let idx = self.selected.selected().unwrap_or(0);
-        self.command_inputs[idx].insert(self.input_cursor, c);
+        self.plan.commands[idx].cmd.insert(self.input_cursor, c);
         self.input_cursor += 1;
     }
 
     fn input_delete_char(&mut self) {
-        if self.running || self.input_cursor == 0 {
+        if self.input_cursor == 0 {
             return;
         }
         let idx = self.selected.selected().unwrap_or(0);
-        self.command_inputs[idx].remove(self.input_cursor - 1);
+        self.plan.commands[idx].cmd.remove(self.input_cursor - 1);
         self.input_cursor -= 1;
     }
 
@@ -448,7 +411,7 @@ impl App {
 
     fn input_move_cursor_right(&mut self) {
         let idx = self.selected.selected().unwrap_or(0);
-        if self.input_cursor < self.command_inputs[idx].len() {
+        if self.input_cursor < self.plan.commands[idx].cmd.len() {
             self.input_cursor += 1;
         }
     }
@@ -472,52 +435,32 @@ impl App {
             && let Some(first_step_idx) = self.get_first_non_successful_step_in_plan()
         {
             self.selected.select(Some(first_step_idx));
-            self.update_cursor_for_current_input();
             self.start_command();
             // Note: auto mode stays on even if all steps are already successful
         }
         None
     }
 
-    fn add_output(&mut self, line: OutputLine) {
-        self.output.push(line);
-    }
-
     fn clear_output(&mut self) {
-        self.output.clear();
         self.cargo_messages.clear();
         self.scroll_offset = 0;
         self.first_diagnostic_shown = false;
     }
 
-    fn process_output_line(&mut self, line: &str) {
+    fn parse_output_line(line: &str) -> OutputLine {
         // Try to parse as JSON cargo message
         if let Some(msg) = CargoMessage::parse(line) {
-            // Successfully parsed as cargo message
-            self.cargo_messages.push(msg.clone());
-            self.add_output(OutputLine::Cargo(msg));
-            return;
+            OutputLine::Cargo(msg)
+        } else {
+            OutputLine::Other(line.to_string())
         }
-
-        // Not a JSON message, add as-is
-        self.add_output(OutputLine::Other(line.to_string()));
     }
 
     pub fn start_command(&mut self) -> Option<AppAction> {
-        if self.running {
-            return None;
-        }
-
         let selected_idx = self.selected.selected().unwrap_or(0);
-        let command_str = self.command_inputs[selected_idx].clone();
+        let command_str = self.plan.commands[selected_idx].cmd.clone();
 
-        self.running = true;
         self.clear_output();
-
-        // Set status to Running
-        if let Some(step) = self.get_selected_step_mut() {
-            step.status = Status::Running;
-        }
 
         // Parse the command string into program and args
         let parts: Vec<String> = command_str
@@ -540,8 +483,6 @@ impl App {
             }
         }
 
-        let child_handle = self.running_child.clone();
-
         // Spawn the command execution as a background task
         let task = tokio::spawn(async move {
             let child = Command::new(&program)
@@ -549,27 +490,10 @@ impl App {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .kill_on_drop(true)
                 .spawn()?;
 
-            // Store the child handle so it can be killed if needed
-            {
-                let mut guard = child_handle.lock().await;
-                *guard = Some(child);
-            }
-
-            // Take the child out of the Option to wait for it
-            let child_to_wait = {
-                let mut guard = child_handle.lock().await;
-                guard.take()
-            };
-
-            let output = if let Some(child) = child_to_wait {
-                child.wait_with_output().await?
-            } else {
-                return Err(eyre!("Child process was killed"));
-            };
-
-            // Child handle is already cleared by the take() above
+            let output = child.wait_with_output().await?;
 
             // Keep ANSI color codes in the output for colored display
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -582,107 +506,111 @@ impl App {
             })
         });
 
-        self.running_task = Some(task);
+        if let Some(step) = self.get_selected_step_mut() {
+            step.exec = PlanStepExecution::Running { task: Some(task) }
+        }
         None
     }
 
     async fn check_command_completion(&mut self) {
-        if let Some(task) = &mut self.running_task
-            && task.is_finished()
-        {
-            let task = self.running_task.take().unwrap();
+        let task = self.plan.commands.iter_mut().find_map(|step| {
+            if let PlanStepExecution::Running { task } = &mut step.exec
+                && let Some(handle) = task
+                && handle.is_finished()
+            {
+                task.take()
+            } else {
+                None
+            }
+        });
 
+        if let Some(task) = task {
             // Get the result (this won't block since it's finished)
             let final_status = match task.await {
                 Ok(Ok(result)) => {
-                    for line in result.stdout.lines() {
-                        self.process_output_line(line);
-                    }
-                    for line in result.stderr.lines() {
-                        self.process_output_line(line);
-                    }
+                    let lines: Vec<OutputLine> = result
+                        .stdout
+                        .lines()
+                        .map(Self::parse_output_line)
+                        .chain(result.stderr.lines().map(Self::parse_output_line))
+                        .collect();
 
-                    // Determine status based on cargo messages
-                    let has_error = self.cargo_messages.iter().any(|msg| {
-                        if let CargoMessage::CompilerMessage { message, .. } = msg {
-                            message.level == DiagnosticLevel::Error
-                        } else {
-                            false
-                        }
-                    });
-
-                    let has_warning = self.cargo_messages.iter().any(|msg| {
-                        if let CargoMessage::CompilerMessage { message, .. } = msg {
-                            message.level == DiagnosticLevel::Warning
-                        } else {
-                            false
-                        }
-                    });
-
-                    let warnings = self
-                        .cargo_messages
+                    let n_warnings = lines
                         .iter()
-                        .map(|msg| {
-                            if let CargoMessage::CompilerMessage { message, .. } = msg
-                                && message.level == DiagnosticLevel::Warning
-                            {
-                                1
-                            } else {
-                                0
-                            }
+                        .map(|line| match line {
+                            OutputLine::Cargo(cargo_message) => match cargo_message {
+                                CargoMessage::CompilerMessage { message, target: _ }
+                                    if message.level == DiagnosticLevel::Warning =>
+                                {
+                                    1
+                                }
+                                _ => 0,
+                            },
+                            OutputLine::Other(_) => 0,
                         })
                         .sum();
 
-                    let failures = self
-                        .cargo_messages
+                    let n_errors = lines
                         .iter()
-                        .map(|msg| {
-                            if let CargoMessage::CompilerMessage { message, .. } = msg
-                                && message.level == DiagnosticLevel::Error
-                            {
-                                1
-                            } else {
-                                0
-                            }
+                        .map(|line| match line {
+                            OutputLine::Cargo(cargo_message) => match cargo_message {
+                                CargoMessage::CompilerMessage { message, target: _ }
+                                    if message.level == DiagnosticLevel::Error =>
+                                {
+                                    1
+                                }
+                                _ => 0,
+                            },
+                            OutputLine::Other(_) => 0,
                         })
                         .sum();
 
-                    if has_error || !result.success {
-                        Status::Failure { warnings, failures }
-                    } else if has_warning {
-                        Status::Warning(warnings)
-                    } else {
-                        Status::Success
-                    }
+                    let result = match (n_warnings, n_errors, result.success) {
+                        (0, 0, true) => PlanStepExecution::Success { output: lines },
+                        (0, 0, false) => PlanStepExecution::Error { output: lines },
+                        (1.., 0, _) => PlanStepExecution::Warning {
+                            warnings: n_warnings,
+                            output: lines,
+                        },
+                        (_, 1.., _) => PlanStepExecution::Failure {
+                            warnings: n_warnings,
+                            failures: n_errors,
+                            output: lines,
+                        },
+                    };
+
+                    result
                 }
                 Ok(Err(e)) => {
-                    self.add_output(OutputLine::Other(format!("Error: {}", e)));
-                    Status::Error
+                    let output = vec![OutputLine::Other(format!("Error: {}", e))];
+                    PlanStepExecution::Error { output }
                 }
                 Err(e) => {
-                    if e.is_cancelled() {
-                        self.add_output(OutputLine::Other("Command was cancelled".to_string()));
+                    let output = if e.is_cancelled() {
+                        vec![OutputLine::Other("Command was cancelled".to_string())]
                     } else {
-                        self.add_output(OutputLine::Other(format!("Task error: {}", e)));
-                    }
-                    Status::Error
+                        vec![OutputLine::Other(format!("Task error: {}", e))]
+                    };
+                    PlanStepExecution::Error { output }
                 }
             };
 
+            let should_continue = matches!(
+                final_status,
+                PlanStepExecution::Success { .. } | PlanStepExecution::Warning { .. }
+            );
+
             // Update the status of the selected step
             if let Some(step) = self.get_selected_step_mut() {
-                step.status = final_status.clone();
+                step.exec = final_status;
             }
-
-            self.running = false;
 
             // Auto-advance to next step if in auto mode and current step succeeded or has warnings
             if self.auto_mode
-                && matches!(final_status, Status::Success | Status::Warning(_))
+                && should_continue
                 && let Some(next_step_idx) = self.get_next_step_in_plan()
             {
                 self.selected.select(Some(next_step_idx));
-                self.update_cursor_for_current_input();
                 self.start_command();
                 // Note: auto mode stays on even when reaching end of plan
             }
@@ -690,21 +618,14 @@ impl App {
     }
 
     fn cancel_running_command(&mut self) {
-        // Kill the child process if it exists
-        {
-            let mut guard = self.running_child.blocking_lock();
-            if let Some(child) = guard.as_mut() {
-                let _ = child.start_kill();
+        self.plan.commands.iter_mut().for_each(|step| {
+            if let PlanStepExecution::Running { task } = &mut step.exec
+                && let Some(handle) = task
+            {
+                handle.abort();
+                step.exec = PlanStepExecution::NotRun;
             }
-            *guard = None;
-        }
-
-        // Abort the task
-        if let Some(task) = self.running_task.take() {
-            task.abort();
-        }
-
-        self.running = false;
+        });
     }
 }
 

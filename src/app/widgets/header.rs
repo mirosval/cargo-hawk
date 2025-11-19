@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::app::model::Status;
+use crate::app::model::PlanStepExecution;
 
 #[derive(Debug, Builder)]
 pub struct Header<'a> {
@@ -73,13 +73,13 @@ impl<'a> Widget for &Header<'a> {
 pub struct HeaderTab<'a> {
     id: usize,
     name: &'a str,
-    status: &'a Status,
+    exec: &'a PlanStepExecution,
     selected: bool,
 }
 
 impl<'a> HeaderTab<'a> {
     fn span(&self) -> Span<'a> {
-        let status_indicator = get_status_indicator(self.status);
+        let status_indicator = get_status_indicator(self.exec);
         let step_idx = self.id;
         let name = self.name;
         let tab_text = if status_indicator.is_empty() {
@@ -112,13 +112,15 @@ fn get_tab_color(idx: usize) -> Color {
     colors[idx % colors.len()]
 }
 
-fn get_status_indicator(status: &Status) -> String {
-    match status {
-        Status::NotRun => "".to_string(),
-        Status::Running => "...".to_string(),
-        Status::Warning(n) => format!("{n}W"),
-        Status::Failure { warnings, failures } => format!("{failures}E {warnings}W"),
-        Status::Error => "Error".to_string(),
-        Status::Success => "✓".to_string(),
+fn get_status_indicator(exec: &PlanStepExecution) -> String {
+    match exec {
+        PlanStepExecution::NotRun => "".to_string(),
+        PlanStepExecution::Running { .. } => "...".to_string(),
+        PlanStepExecution::Warning { warnings, .. } => format!("{warnings}W"),
+        PlanStepExecution::Failure {
+            warnings, failures, ..
+        } => format!("{failures}E {warnings}W"),
+        PlanStepExecution::Error { .. } => "Error".to_string(),
+        PlanStepExecution::Success { .. } => "✓".to_string(),
     }
 }

@@ -6,10 +6,13 @@ use ratatui::{
 
 use crate::{
     App,
-    app::widgets::{
-        footer::Footer,
-        header::{Header, HeaderTab},
-        output::Output,
+    app::{
+        model::{OutputLine, PlanStepExecution},
+        widgets::{
+            footer::Footer,
+            header::{Header, HeaderTab},
+            output::Output,
+        },
     },
 };
 
@@ -39,7 +42,7 @@ impl Widget for &App {
                 HeaderTab::builder()
                     .id(id)
                     .name(&step.name)
-                    .status(&step.status)
+                    .exec(&step.exec)
                     .selected(id == selected_idx)
                     .build()
             })
@@ -52,15 +55,23 @@ impl Widget for &App {
             .build()
             .render(chunks[0], buf);
 
+        let output = match &self.plan.commands[selected_idx].exec {
+            PlanStepExecution::NotRun => &vec![OutputLine::Other("Not started".to_string())],
+            PlanStepExecution::Running { .. } => &vec![OutputLine::Other("Running...".to_string())],
+            PlanStepExecution::Error { output } => &output,
+            PlanStepExecution::Warning { output, .. } => output,
+            PlanStepExecution::Failure { output, .. } => output,
+            PlanStepExecution::Success { output } => output,
+        };
         Output::builder()
             .diagnostic_display_mode(&self.diagnostic_display_mode)
             .scroll_offset(self.scroll_offset)
-            .output(&self.output)
+            .output(output)
             .build()
             .render(chunks[1], buf);
 
         // Input field with focus indicator
-        let input_text = &self.command_inputs[selected_idx];
+        let input_text = &self.plan.commands[selected_idx].cmd;
         let (input_style, input_title) = if self.input_focused {
             (
                 Style::default()
