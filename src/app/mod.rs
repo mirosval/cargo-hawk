@@ -228,11 +228,7 @@ impl App {
                     }
                 }
             }
-            AppEvent::Init => {
-                // Start the first command on init
-                self.start_command();
-                None
-            }
+            AppEvent::Init => Some(AppAction::StartCommand),
             AppEvent::Mouse(_) => None,
             AppEvent::Resize(_, _) => None,
             AppEvent::FocusLost => None,
@@ -331,7 +327,7 @@ impl App {
 
     fn get_first_step_in_plan(&self) -> Option<usize> {
         if !self.plan.commands.is_empty() {
-            Some(1)
+            Some(0)
         } else {
             None
         }
