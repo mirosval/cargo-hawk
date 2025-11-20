@@ -316,7 +316,7 @@ impl App {
         self.plan.commands.get(next).map(|_| next)
     }
 
-    fn get_first_non_successful_step_in_plan(&self) -> Option<usize> {
+    fn get_first_non_successful_step(&self) -> Option<usize> {
         for (step_idx, step) in self.plan.commands.iter().enumerate() {
             if !matches!(step.exec, PlanStepExecution::Success { .. }) {
                 return Some(step_idx);
@@ -425,7 +425,7 @@ impl App {
         self.auto_mode = !self.auto_mode;
         // If turning on auto mode, start from first non-successful step
         if self.auto_mode
-            && let Some(first_step_idx) = self.get_first_non_successful_step_in_plan()
+            && let Some(first_step_idx) = self.get_first_non_successful_step()
         {
             self.selected.select(Some(first_step_idx));
             self.start_command();
@@ -597,13 +597,14 @@ impl App {
             }
 
             // Auto-advance to next step if in auto mode and current step succeeded or has warnings
-            if self.auto_mode
-                && should_continue
-                && let Some(next_step_idx) = self.get_next_step_in_plan()
-            {
-                self.selected.select(Some(next_step_idx));
-                self.start_command();
-                // Note: auto mode stays on even when reaching end of plan
+            if self.auto_mode && should_continue {
+                if let Some(next_step_idx) = self.get_next_step_in_plan() {
+                    self.selected.select(Some(next_step_idx));
+                    self.start_command();
+                } else if let Some(next_step_idx) = self.get_first_non_successful_step() {
+                    // Note: when we reached the end and there are still warnings, switch to them
+                    self.selected.select(Some(next_step_idx))
+                }
             }
         }
     }
