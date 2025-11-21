@@ -76,6 +76,7 @@
             cargo-watch
             rust-analyzer
             xh
+            cargo-hawk
           ];
         };
       }

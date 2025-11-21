@@ -21,7 +21,7 @@ use tokio::{
 use crate::app::model::OutputLine;
 use crate::app::model::PlanStepExecution;
 use crate::app::model::cargo::DiagnosticLevel;
-use crate::{Args, Tui};
+use crate::{Tui, cli::Args};
 
 mod action;
 mod event;
@@ -311,7 +311,7 @@ impl App {
         }
     }
 
-    fn get_next_step_in_plan(&self) -> Option<usize> {
+    fn get_next_step(&self) -> Option<usize> {
         let next = self.selected.selected()? + 1;
         self.plan.commands.get(next).map(|_| next)
     }
@@ -598,7 +598,7 @@ impl App {
 
             // Auto-advance to next step if in auto mode and current step succeeded or has warnings
             if self.auto_mode && should_continue {
-                if let Some(next_step_idx) = self.get_next_step_in_plan() {
+                if let Some(next_step_idx) = self.get_next_step() {
                     self.selected.select(Some(next_step_idx));
                     self.start_command();
                 } else if let Some(next_step_idx) = self.get_first_non_successful_step() {

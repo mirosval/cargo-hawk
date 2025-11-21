@@ -25,3 +25,8 @@ bon = "3.8.1"
 insta = { version = "1.43.2", features = ["yaml"] }
 insta-cmd = "0.6.0"
 testresult = "0.4.1"
+
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1

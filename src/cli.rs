@@ -1,12 +1,50 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
-#[derive(Parser, Debug)]
-#[command(name = "cargo-hawk")]
-#[command(about = "A file watcher with interactive command runner for Rust projects", long_about = None)]
+pub fn parse() -> Args {
+    HawkArgs::parse().into_args()
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about)]
+pub struct HawkArgs {
+    #[command(subcommand)]
+    hawk: HawkCommand,
+}
+
+impl HawkArgs {
+    fn into_args(self) -> Args {
+        let HawkCommand::Hawk(args) = self.hawk;
+        args
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HawkCommand {
+    Hawk(Args),
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about = "A file watcher with interactive command runner for Rust projects", long_about = None)]
 pub struct Args {
     /// Directory to watch (defaults to current directory)
     #[arg(short, long, default_value = ".")]
     pub path: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(command: &str) -> Result<Args, clap::Error> {
+        let command_args = command.split_whitespace();
+        dbg!(HawkArgs::try_parse_from(command_args).map(HawkArgs::into_args))
+    }
+
+    #[test]
+    fn test_argparsing() {
+        assert!(parse("cargo hawk").is_ok());
+        assert!(parse("cargo-hawk hawk").is_ok());
+    }
 }

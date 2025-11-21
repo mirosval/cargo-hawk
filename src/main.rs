@@ -1,12 +1,13 @@
-use clap::Parser;
 use color_eyre::eyre::Result;
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
-use cargo_hawk::{App, Args, Tui};
+use cargo_hawk::{App, Tui, cli};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    color_eyre::install()?;
+
+    let args = cli::parse();
 
     let mut app = App::new(args)?;
     let mut tui = {
