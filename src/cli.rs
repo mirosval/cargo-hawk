@@ -31,6 +31,10 @@ pub struct Args {
     /// Directory to watch (defaults to current directory)
     #[arg(short, long, default_value = ".")]
     pub path: PathBuf,
+
+    /// Enable logging into cargo_hawk.log
+    #[arg(short, long, default_value = "false")]
+    pub verbose: bool,
 }
 
 #[cfg(test)]

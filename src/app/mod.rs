@@ -17,10 +17,12 @@ use tokio::{
     process::Command,
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
+use tracing::Level;
 
 use crate::app::model::OutputLine;
 use crate::app::model::PlanStepExecution;
 use crate::app::model::cargo::DiagnosticLevel;
+use crate::trace_dbg;
 use crate::{Tui, cli::Args};
 
 mod action;
@@ -450,6 +452,7 @@ impl App {
     }
 
     pub fn start_command(&mut self) -> Option<AppAction> {
+        trace_dbg!("start command");
         let selected_idx = self.selected.selected().unwrap_or(0);
         let command_str = self.plan.commands[selected_idx].cmd.clone();
 
@@ -521,6 +524,7 @@ impl App {
             // Get the result (this won't block since it's finished)
             let final_status = match task.await {
                 Ok(Ok(result)) => {
+                    trace_dbg!("command completed");
                     let lines: Vec<OutputLine> = result
                         .stdout
                         .lines()
@@ -573,10 +577,12 @@ impl App {
                     }
                 }
                 Ok(Err(e)) => {
+                    trace_dbg!(level: Level::ERROR, &e);
                     let output = vec![OutputLine::Other(format!("Error: {}", e))];
                     PlanStepExecution::Error { output }
                 }
                 Err(e) => {
+                    trace_dbg!(level: Level::ERROR, &e);
                     let output = if e.is_cancelled() {
                         vec![OutputLine::Other("Command was cancelled".to_string())]
                     } else {
@@ -633,6 +639,7 @@ mod tests {
     fn test_first_screen() -> TestResult {
         let app = App::new(Args {
             path: PathBuf::from("."),
+            verbose: false,
         })?;
         let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
         terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
@@ -644,6 +651,7 @@ mod tests {
     fn test_auto_disabled() -> TestResult {
         let mut app = App::new(Args {
             path: PathBuf::from("."),
+            verbose: false,
         })?;
         app.auto_mode = false;
         let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
