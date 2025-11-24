@@ -12,11 +12,8 @@ use ratatui::{
     prelude::Backend,
     widgets::ListState,
 };
-use std::{path::PathBuf, process::Stdio};
-use tokio::{
-    process::Command,
-    sync::mpsc::{UnboundedReceiver, UnboundedSender},
-};
+use std::path::PathBuf;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::Level;
 
 use crate::app::model::OutputLine;
@@ -35,23 +32,30 @@ pub use event::AppEvent;
 fn setup_file_watcher(
     path: PathBuf,
     event_tx: UnboundedSender<AppEvent>,
+    extensions: Vec<String>,
 ) -> Result<RecommendedWatcher> {
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
             if let Ok(event) = res
                 && (event.kind.is_modify() || event.kind.is_create())
+                && event
+                    .paths
+                    .iter()
+                    .flat_map(|path| path.extension().and_then(|s| s.to_str()))
+                    .any(|ext| extensions.contains(&ext.to_string()))
             {
-                for path in event.paths {
-                    if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                        let _ = event_tx.send(AppEvent::FileChanged(path));
-                        break;
-                    }
+                let res = event_tx.send(AppEvent::FileChanged);
+                if let Err(err) = res {
+                    trace_dbg!("error sending FileChanged event");
+                    trace_dbg!(err);
                 }
             }
         },
         Config::default(),
     )?;
 
+    let msg = format!("watching path: {:?}", path);
+    trace_dbg!(msg);
     watcher.watch(&path, RecursiveMode::Recursive)?;
     Ok(watcher)
 }
@@ -70,12 +74,9 @@ pub struct App {
     _file_watcher: RecommendedWatcher,
     plan: Plan,
     selected: ListState,
-    last_file_changed: Option<String>,
     scroll_offset: u16,
     input_cursor: usize,
     input_focused: bool,
-    cargo_messages: Vec<CargoMessage>,
-    first_diagnostic_shown: bool,
     auto_mode: bool,
     diagnostic_display_mode: DiagnosticDisplayMode,
     should_quit: bool,
@@ -107,19 +108,18 @@ impl App {
         let mut selected = ListState::default();
         selected.select(Some(0));
 
-        let file_watcher = setup_file_watcher(args.path.clone(), event_tx.clone())?;
+        // TODO: Decouple this
+        let file_watcher =
+            setup_file_watcher(args.path.clone(), event_tx.clone(), vec!["rs".to_string()])?;
         Ok(Self {
             event_rx,
             event_tx,
             _file_watcher: file_watcher,
             plan,
             selected,
-            last_file_changed: None,
             scroll_offset: 0,
             input_cursor: 0,
             input_focused: false,
-            cargo_messages: Vec::new(),
-            first_diagnostic_shown: false,
             auto_mode: true,
             diagnostic_display_mode: DiagnosticDisplayMode::First,
             should_quit: false,
@@ -239,8 +239,7 @@ impl App {
             AppEvent::Error => None,
             AppEvent::Tick => None,
             AppEvent::Render => None,
-            AppEvent::FileChanged(path) => {
-                self.last_file_changed = Some(path.display().to_string());
+            AppEvent::FileChanged => {
                 self.reset_all_steps();
 
                 // If auto mode is on, start from the first step in the plan
@@ -437,9 +436,7 @@ impl App {
     }
 
     fn clear_output(&mut self) {
-        self.cargo_messages.clear();
         self.scroll_offset = 0;
-        self.first_diagnostic_shown = false;
     }
 
     fn parse_output_line(line: &str) -> OutputLine {
@@ -453,58 +450,8 @@ impl App {
 
     pub fn start_command(&mut self) -> Option<AppAction> {
         trace_dbg!("start command");
-        let selected_idx = self.selected.selected().unwrap_or(0);
-        let command_str = self.plan.commands[selected_idx].cmd.clone();
-
         self.clear_output();
-
-        // Parse the command string into program and args
-        let parts: Vec<String> = command_str
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
-
-        let program = parts[0].clone();
-        let mut args: Vec<String> = parts[1..].to_vec();
-
-        // Inject JSON format for cargo commands
-        if program == "cargo" && !args.is_empty() {
-            let cargo_subcommand = &args[0];
-            let known_commands = ["check", "build", "test", "run", "clippy"];
-
-            if known_commands.contains(&cargo_subcommand.as_str()) {
-                // Insert --message-format after the subcommand
-                args.insert(1, "--message-format".to_string());
-                args.insert(2, "json-diagnostic-rendered-ansi".to_string());
-            }
-        }
-
-        // Spawn the command execution as a background task
-        let task = tokio::spawn(async move {
-            let child = Command::new(&program)
-                .args(&args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()?;
-
-            let output = child.wait_with_output().await?;
-
-            // Keep ANSI color codes in the output for colored display
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-            Ok(CommandResult {
-                stdout,
-                stderr,
-                success: output.status.success(),
-            })
-        });
-
-        if let Some(step) = self.get_selected_step_mut() {
-            step.exec = PlanStepExecution::Running { task: Some(task) }
-        }
+        self.plan.start_next();
         None
     }
 

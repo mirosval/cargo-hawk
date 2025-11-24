@@ -1,7 +1,7 @@
 use crate::app::{CommandResult, model::cargo::CargoMessage};
 use color_eyre::eyre::Result;
-use std::fmt::Display;
-use tokio::task::JoinHandle;
+use std::{fmt::Display, process::Stdio};
+use tokio::{process::Command, task::JoinHandle};
 
 pub mod cargo;
 
@@ -32,11 +32,102 @@ impl Plan {
     }
 }
 
+impl Plan {
+    pub fn start_next(&mut self) {
+        if let Some(next) = self.next_step() {
+            next.start();
+        }
+    }
+
+    fn next_step<'a>(&'a mut self) -> Option<&'a mut PlanStep> {
+        self.commands.iter_mut().find(|step| step.is_ready())
+    }
+
+    fn reset(&mut self) {
+        self.commands.iter_mut().for_each(|step| {
+            step.reset();
+        });
+    }
+}
+
 #[derive(Debug)]
 pub struct PlanStep {
     pub name: String,
     pub cmd: String,
     pub exec: PlanStepExecution,
+}
+
+impl PlanStep {
+    fn start(&mut self) {
+        // Parse the command string into program and args
+        let parts: Vec<String> = self.cmd.split_whitespace().map(|s| s.to_string()).collect();
+
+        let program = parts[0].clone();
+        let mut args: Vec<String> = parts[1..].to_vec();
+
+        // Inject JSON format for cargo commands
+        if program == "cargo" && !args.is_empty() {
+            let cargo_subcommand = &args[0];
+            let known_commands = ["check", "build", "test", "run", "clippy"];
+
+            if known_commands.contains(&cargo_subcommand.as_str()) {
+                // Insert --message-format after the subcommand
+                args.insert(1, "--message-format".to_string());
+                args.insert(2, "json-diagnostic-rendered-ansi".to_string());
+            }
+        }
+
+        // Spawn the command execution as a background task
+        let task = tokio::spawn(async move {
+            let child = Command::new(&program)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()?;
+
+            let output = child.wait_with_output().await?;
+
+            // Keep ANSI color codes in the output for colored display
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            Ok(CommandResult {
+                stdout,
+                stderr,
+                success: output.status.success(),
+            })
+        });
+
+        self.exec = PlanStepExecution::Running { task: Some(task) };
+    }
+
+    fn reset(&mut self) {
+        self.exec = PlanStepExecution::NotRun;
+    }
+
+    fn is_ready(&self) -> bool {
+        match self.exec {
+            PlanStepExecution::NotRun => true,
+            PlanStepExecution::Running { .. } => false,
+            PlanStepExecution::Error { .. } => false,
+            PlanStepExecution::Warning { .. } => false,
+            PlanStepExecution::Failure { .. } => false,
+            PlanStepExecution::Success { .. } => false,
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        match self.exec {
+            PlanStepExecution::NotRun => false,
+            PlanStepExecution::Running { .. } => false,
+            PlanStepExecution::Error { .. } => true,
+            PlanStepExecution::Warning { .. } => true,
+            PlanStepExecution::Failure { .. } => true,
+            PlanStepExecution::Success { .. } => true,
+        }
+    }
 }
 
 #[derive(Debug)]

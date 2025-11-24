@@ -1,10 +1,9 @@
 use crossterm::event::{KeyEvent, MouseEvent};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Init,
-    FileChanged(PathBuf),
+    FileChanged,
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
