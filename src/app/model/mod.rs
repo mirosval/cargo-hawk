@@ -52,18 +52,67 @@ impl Plan {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.commands.iter_mut().for_each(|step| {
+            step.reset();
+        });
+    }
+
     pub fn is_running(&self) -> bool {
         self.commands.iter().any(|step| step.is_running())
     }
 
-    fn next_step<'a>(&'a mut self) -> Option<&'a mut PlanStep> {
-        self.commands.iter_mut().find(|step| step.is_ready())
+    pub fn is_finished(&self) -> bool {
+        self.commands.iter().any(|step| step.is_finished())
     }
 
-    fn reset(&mut self) {
-        self.commands.iter_mut().for_each(|step| {
-            step.reset();
-        });
+    pub fn best_step_to_present_idx(&self) -> Option<usize> {
+        let first_step_with_errors = self
+            .commands
+            .iter()
+            .enumerate()
+            .find_map(|(idx, step)| if step.has_errors() { Some(idx) } else { None });
+        let first_step_with_failures = self
+            .commands
+            .iter()
+            .enumerate()
+            .find_map(|(idx, step)| if step.has_failures() { Some(idx) } else { None });
+        let first_step_with_warnings = self
+            .commands
+            .iter()
+            .enumerate()
+            .find_map(|(idx, step)| if step.has_warnings() { Some(idx) } else { None });
+        let last_successful_step = if self.is_running() {
+            self.commands.iter().enumerate().find_map(|(idx, step)| {
+                if step.is_running() && idx > 0 {
+                    Some(idx - 1)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        let last_step = if !self.commands.is_empty() && self.is_finished() {
+            Some(self.commands.len() - 1)
+        } else {
+            None
+        };
+        let first_step = if !self.commands.is_empty() {
+            Some(0)
+        } else {
+            None
+        };
+        first_step_with_errors
+            .or(first_step_with_failures)
+            .or(first_step_with_warnings)
+            .or(last_successful_step)
+            .or(last_step)
+            .or(first_step)
+    }
+
+    fn next_step(&mut self) -> Option<&mut PlanStep> {
+        self.commands.iter_mut().find(|step| step.is_ready())
     }
 }
 
@@ -121,6 +170,7 @@ impl PlanStep {
     }
 
     async fn check(&mut self) {
+        #[allow(clippy::nonminimal_bool)] // for some reason this one is bugged
         if let PlanStepExecution::Running { task } = &mut self.exec
             && let Some(handle) = task
             && handle.is_finished()
@@ -233,6 +283,39 @@ impl PlanStep {
             PlanStepExecution::Warning { .. } => true,
             PlanStepExecution::Failure { .. } => true,
             PlanStepExecution::Success { .. } => true,
+        }
+    }
+
+    fn has_errors(&self) -> bool {
+        match self.exec {
+            PlanStepExecution::NotRun => false,
+            PlanStepExecution::Running { .. } => false,
+            PlanStepExecution::Error { .. } => true,
+            PlanStepExecution::Warning { .. } => false,
+            PlanStepExecution::Failure { .. } => false,
+            PlanStepExecution::Success { .. } => false,
+        }
+    }
+
+    fn has_failures(&self) -> bool {
+        match self.exec {
+            PlanStepExecution::NotRun => false,
+            PlanStepExecution::Running { .. } => false,
+            PlanStepExecution::Error { .. } => false,
+            PlanStepExecution::Warning { .. } => false,
+            PlanStepExecution::Failure { .. } => true,
+            PlanStepExecution::Success { .. } => false,
+        }
+    }
+
+    fn has_warnings(&self) -> bool {
+        match self.exec {
+            PlanStepExecution::NotRun => false,
+            PlanStepExecution::Running { .. } => false,
+            PlanStepExecution::Error { .. } => false,
+            PlanStepExecution::Warning { .. } => true,
+            PlanStepExecution::Failure { .. } => false,
+            PlanStepExecution::Success { .. } => false,
         }
     }
 }

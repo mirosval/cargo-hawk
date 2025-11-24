@@ -234,7 +234,7 @@ impl App {
             AppEvent::Tick => None,
             AppEvent::Render => None,
             AppEvent::FileChanged => {
-                self.reset_all_steps();
+                self.plan.reset();
 
                 // If auto mode is on, start from the first step in the plan
                 if self.auto_mode
@@ -292,12 +292,6 @@ impl App {
 
     fn total_steps(&self) -> usize {
         self.plan.commands.len()
-    }
-
-    fn reset_all_steps(&mut self) {
-        for step in &mut self.plan.commands {
-            step.exec = PlanStepExecution::NotRun;
-        }
     }
 
     fn get_first_non_successful_step(&self) -> Option<usize> {
@@ -435,6 +429,7 @@ impl App {
         // Auto-advance to next step if in auto mode and current step succeeded or has warnings
         if self.auto_mode && !self.plan.is_running() {
             self.plan.start_next();
+            self.selected.select(self.plan.best_step_to_present_idx());
         }
     }
 }
