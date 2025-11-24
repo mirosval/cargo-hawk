@@ -1,7 +1,14 @@
-use crate::app::{CommandResult, model::cargo::CargoMessage};
+use crate::{
+    app::{
+        CommandResult,
+        model::cargo::{CargoMessage, DiagnosticLevel},
+    },
+    trace_dbg,
+};
 use color_eyre::eyre::Result;
 use std::{fmt::Display, process::Stdio};
 use tokio::{process::Command, task::JoinHandle};
+use tracing::Level;
 
 pub mod cargo;
 
@@ -37,6 +44,16 @@ impl Plan {
         if let Some(next) = self.next_step() {
             next.start();
         }
+    }
+
+    pub async fn check(&mut self) {
+        for cmd in self.commands.iter_mut() {
+            cmd.check().await;
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.commands.iter().any(|step| step.is_running())
     }
 
     fn next_step<'a>(&'a mut self) -> Option<&'a mut PlanStep> {
@@ -103,6 +120,85 @@ impl PlanStep {
         self.exec = PlanStepExecution::Running { task: Some(task) };
     }
 
+    async fn check(&mut self) {
+        if let PlanStepExecution::Running { task } = &mut self.exec
+            && let Some(handle) = task
+            && handle.is_finished()
+            && let Some(task) = task
+        {
+            let final_status = match task.await {
+                Ok(Ok(result)) => {
+                    trace_dbg!("command completed");
+                    let lines: Vec<OutputLine> = result
+                        .stdout
+                        .lines()
+                        .map(parse_output_line)
+                        .chain(result.stderr.lines().map(parse_output_line))
+                        .collect();
+
+                    let n_warnings = lines
+                        .iter()
+                        .map(|line| match line {
+                            OutputLine::Cargo(cargo_message) => match cargo_message {
+                                CargoMessage::CompilerMessage { message, target: _ }
+                                    if message.level == DiagnosticLevel::Warning =>
+                                {
+                                    1
+                                }
+                                _ => 0,
+                            },
+                            OutputLine::Other(_) => 0,
+                        })
+                        .sum();
+
+                    let n_errors = lines
+                        .iter()
+                        .map(|line| match line {
+                            OutputLine::Cargo(cargo_message) => match cargo_message {
+                                CargoMessage::CompilerMessage { message, target: _ }
+                                    if message.level == DiagnosticLevel::Error =>
+                                {
+                                    1
+                                }
+                                _ => 0,
+                            },
+                            OutputLine::Other(_) => 0,
+                        })
+                        .sum();
+
+                    match (n_warnings, n_errors, result.success) {
+                        (0, 0, true) => PlanStepExecution::Success { output: lines },
+                        (0, 0, false) => PlanStepExecution::Error { output: lines },
+                        (1.., 0, _) => PlanStepExecution::Warning {
+                            warnings: n_warnings,
+                            output: lines,
+                        },
+                        (_, 1.., _) => PlanStepExecution::Failure {
+                            warnings: n_warnings,
+                            failures: n_errors,
+                            output: lines,
+                        },
+                    }
+                }
+                Ok(Err(e)) => {
+                    trace_dbg!(level: Level::ERROR, &e);
+                    let output = vec![OutputLine::Other(format!("Error: {}", e))];
+                    PlanStepExecution::Error { output }
+                }
+                Err(e) => {
+                    trace_dbg!(level: Level::ERROR, &e);
+                    let output = if e.is_cancelled() {
+                        vec![OutputLine::Other("Command was cancelled".to_string())]
+                    } else {
+                        vec![OutputLine::Other(format!("Task error: {}", e))]
+                    };
+                    PlanStepExecution::Error { output }
+                }
+            };
+            self.exec = final_status;
+        }
+    }
+
     fn reset(&mut self) {
         self.exec = PlanStepExecution::NotRun;
     }
@@ -111,6 +207,17 @@ impl PlanStep {
         match self.exec {
             PlanStepExecution::NotRun => true,
             PlanStepExecution::Running { .. } => false,
+            PlanStepExecution::Error { .. } => false,
+            PlanStepExecution::Warning { .. } => false,
+            PlanStepExecution::Failure { .. } => false,
+            PlanStepExecution::Success { .. } => false,
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        match self.exec {
+            PlanStepExecution::NotRun => false,
+            PlanStepExecution::Running { .. } => true,
             PlanStepExecution::Error { .. } => false,
             PlanStepExecution::Warning { .. } => false,
             PlanStepExecution::Failure { .. } => false,
@@ -198,5 +305,14 @@ impl OutputLine {
             OutputLine::Cargo(cargo_message) => cargo_message.render(diagnostic_mode, is_first),
             OutputLine::Other(line) => vec![line.to_string()],
         }
+    }
+}
+
+fn parse_output_line(line: &str) -> OutputLine {
+    // Try to parse as JSON cargo message
+    if let Some(msg) = CargoMessage::parse(line) {
+        OutputLine::Cargo(msg)
+    } else {
+        OutputLine::Other(line.to_string())
     }
 }

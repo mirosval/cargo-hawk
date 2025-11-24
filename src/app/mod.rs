@@ -1,10 +1,12 @@
+use crate::app::model::PlanStepExecution;
+use crate::trace_dbg;
+use crate::{Tui, cli::Args};
 use action::AppAction;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use model::DiagnosticDisplayMode;
 use model::Plan;
 use model::PlanStep;
-use model::cargo::CargoMessage;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
     Frame,
@@ -14,13 +16,6 @@ use ratatui::{
 };
 use std::path::PathBuf;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tracing::Level;
-
-use crate::app::model::OutputLine;
-use crate::app::model::PlanStepExecution;
-use crate::app::model::cargo::DiagnosticLevel;
-use crate::trace_dbg;
-use crate::{Tui, cli::Args};
 
 mod action;
 mod event;
@@ -208,7 +203,6 @@ impl App {
                     // UNFOCUSED MODE - navigation
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            self.cancel_running_command();
                             self.should_quit = true;
                             None
                         }
@@ -258,7 +252,6 @@ impl App {
     async fn update(&mut self, action: AppAction) -> Option<AppAction> {
         match action {
             AppAction::CancelCommand => {
-                self.cancel_running_command();
                 self.should_quit = true;
                 None
             }
@@ -301,20 +294,10 @@ impl App {
         self.plan.commands.len()
     }
 
-    fn get_selected_step_mut(&mut self) -> Option<&mut PlanStep> {
-        let selected_idx = self.selected.selected()?;
-        self.plan.commands.get_mut(selected_idx)
-    }
-
     fn reset_all_steps(&mut self) {
         for step in &mut self.plan.commands {
             step.exec = PlanStepExecution::NotRun;
         }
-    }
-
-    fn get_next_step(&self) -> Option<usize> {
-        let next = self.selected.selected()? + 1;
-        self.plan.commands.get(next).map(|_| next)
     }
 
     fn get_first_non_successful_step(&self) -> Option<usize> {
@@ -439,15 +422,6 @@ impl App {
         self.scroll_offset = 0;
     }
 
-    fn parse_output_line(line: &str) -> OutputLine {
-        // Try to parse as JSON cargo message
-        if let Some(msg) = CargoMessage::parse(line) {
-            OutputLine::Cargo(msg)
-        } else {
-            OutputLine::Other(line.to_string())
-        }
-    }
-
     pub fn start_command(&mut self) -> Option<AppAction> {
         trace_dbg!("start command");
         self.clear_output();
@@ -456,121 +430,12 @@ impl App {
     }
 
     async fn check_command_completion(&mut self) {
-        let task = self.plan.commands.iter_mut().find_map(|step| {
-            if let PlanStepExecution::Running { task } = &mut step.exec
-                && let Some(handle) = task
-                && handle.is_finished()
-            {
-                task.take()
-            } else {
-                None
-            }
-        });
+        self.plan.check().await;
 
-        if let Some(task) = task {
-            // Get the result (this won't block since it's finished)
-            let final_status = match task.await {
-                Ok(Ok(result)) => {
-                    trace_dbg!("command completed");
-                    let lines: Vec<OutputLine> = result
-                        .stdout
-                        .lines()
-                        .map(Self::parse_output_line)
-                        .chain(result.stderr.lines().map(Self::parse_output_line))
-                        .collect();
-
-                    let n_warnings = lines
-                        .iter()
-                        .map(|line| match line {
-                            OutputLine::Cargo(cargo_message) => match cargo_message {
-                                CargoMessage::CompilerMessage { message, target: _ }
-                                    if message.level == DiagnosticLevel::Warning =>
-                                {
-                                    1
-                                }
-                                _ => 0,
-                            },
-                            OutputLine::Other(_) => 0,
-                        })
-                        .sum();
-
-                    let n_errors = lines
-                        .iter()
-                        .map(|line| match line {
-                            OutputLine::Cargo(cargo_message) => match cargo_message {
-                                CargoMessage::CompilerMessage { message, target: _ }
-                                    if message.level == DiagnosticLevel::Error =>
-                                {
-                                    1
-                                }
-                                _ => 0,
-                            },
-                            OutputLine::Other(_) => 0,
-                        })
-                        .sum();
-
-                    match (n_warnings, n_errors, result.success) {
-                        (0, 0, true) => PlanStepExecution::Success { output: lines },
-                        (0, 0, false) => PlanStepExecution::Error { output: lines },
-                        (1.., 0, _) => PlanStepExecution::Warning {
-                            warnings: n_warnings,
-                            output: lines,
-                        },
-                        (_, 1.., _) => PlanStepExecution::Failure {
-                            warnings: n_warnings,
-                            failures: n_errors,
-                            output: lines,
-                        },
-                    }
-                }
-                Ok(Err(e)) => {
-                    trace_dbg!(level: Level::ERROR, &e);
-                    let output = vec![OutputLine::Other(format!("Error: {}", e))];
-                    PlanStepExecution::Error { output }
-                }
-                Err(e) => {
-                    trace_dbg!(level: Level::ERROR, &e);
-                    let output = if e.is_cancelled() {
-                        vec![OutputLine::Other("Command was cancelled".to_string())]
-                    } else {
-                        vec![OutputLine::Other(format!("Task error: {}", e))]
-                    };
-                    PlanStepExecution::Error { output }
-                }
-            };
-
-            let should_continue = matches!(
-                final_status,
-                PlanStepExecution::Success { .. } | PlanStepExecution::Warning { .. }
-            );
-
-            // Update the status of the selected step
-            if let Some(step) = self.get_selected_step_mut() {
-                step.exec = final_status;
-            }
-
-            // Auto-advance to next step if in auto mode and current step succeeded or has warnings
-            if self.auto_mode && should_continue {
-                if let Some(next_step_idx) = self.get_next_step() {
-                    self.selected.select(Some(next_step_idx));
-                    self.start_command();
-                } else if let Some(next_step_idx) = self.get_first_non_successful_step() {
-                    // Note: when we reached the end and there are still warnings, switch to them
-                    self.selected.select(Some(next_step_idx))
-                }
-            }
+        // Auto-advance to next step if in auto mode and current step succeeded or has warnings
+        if self.auto_mode && !self.plan.is_running() {
+            self.plan.start_next();
         }
-    }
-
-    fn cancel_running_command(&mut self) {
-        self.plan.commands.iter_mut().for_each(|step| {
-            if let PlanStepExecution::Running { task } = &mut step.exec
-                && let Some(handle) = task
-            {
-                handle.abort();
-                step.exec = PlanStepExecution::NotRun;
-            }
-        });
     }
 }
 
