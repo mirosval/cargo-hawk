@@ -1,14 +1,11 @@
-use crate::{
-    app::{
-        CommandResult,
-        model::cargo::{CargoMessage, DiagnosticLevel},
-    },
-    trace_dbg,
+use crate::app::model::cargo::{CargoMessage, DiagnosticLevel};
+use std::{fmt::Display, process::Stdio, time::Duration};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader, Lines},
+    process::{Child, ChildStderr, ChildStdout, Command},
+    time::Instant,
 };
-use color_eyre::eyre::Result;
-use std::{fmt::Display, process::Stdio};
-use tokio::{process::Command, task::JoinHandle};
-use tracing::Level;
+use tracing::{error, info};
 
 pub mod cargo;
 
@@ -67,6 +64,11 @@ impl Plan {
     }
 
     pub fn best_step_to_present_idx(&self) -> Option<usize> {
+        let first_running_step = self
+            .commands
+            .iter()
+            .enumerate()
+            .find_map(|(idx, step)| if step.is_running() { Some(idx) } else { None });
         let first_step_with_errors = self
             .commands
             .iter()
@@ -103,7 +105,8 @@ impl Plan {
         } else {
             None
         };
-        first_step_with_errors
+        first_running_step
+            .or(first_step_with_errors)
             .or(first_step_with_failures)
             .or(first_step_with_warnings)
             .or(last_successful_step)
@@ -143,109 +146,161 @@ impl PlanStep {
             }
         }
 
-        // Spawn the command execution as a background task
-        let task = tokio::spawn(async move {
-            let child = Command::new(&program)
-                .args(&args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()?;
+        let child = Command::new(&program)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
 
-            let output = child.wait_with_output().await?;
-
-            // Keep ANSI color codes in the output for colored display
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-            Ok(CommandResult {
-                stdout,
-                stderr,
-                success: output.status.success(),
-            })
-        });
-
-        self.exec = PlanStepExecution::Running { task: Some(task) };
+        info!(?child, "spawned child");
+        match child {
+            Ok(mut child) => {
+                if let Some(stdout) = child.stdout.take()
+                    && let Some(stderr) = child.stderr.take()
+                {
+                    self.exec = PlanStepExecution::Running(Box::new(Running {
+                        child,
+                        out_stream: BufReader::new(stdout).lines(),
+                        err_stream: BufReader::new(stderr).lines(),
+                        partial_output: vec![],
+                    }));
+                } else {
+                    self.exec = PlanStepExecution::Error {
+                        output: vec![OutputLine::Other(format!(
+                            "child process did not have stdout: {program:?}"
+                        ))],
+                    }
+                }
+            }
+            Err(err) => {
+                self.exec = PlanStepExecution::Error {
+                    output: vec![OutputLine::Other(format!(
+                        "failed to spawn child process: {err:?}"
+                    ))],
+                }
+            }
+        }
     }
 
     async fn check(&mut self) {
-        #[allow(clippy::nonminimal_bool)] // for some reason this one is bugged
-        if let PlanStepExecution::Running { task } = &mut self.exec
-            && let Some(handle) = task
-            && handle.is_finished()
-            && let Some(task) = task
-        {
-            let final_status = match task.await {
-                Ok(Ok(result)) => {
-                    trace_dbg!("command completed");
-                    let lines: Vec<OutputLine> = result
-                        .stdout
-                        .lines()
-                        .map(parse_output_line)
-                        .chain(result.stderr.lines().map(parse_output_line))
-                        .collect();
-
-                    let n_warnings = lines
-                        .iter()
-                        .map(|line| match line {
-                            OutputLine::Cargo(cargo_message) => match cargo_message {
-                                CargoMessage::CompilerMessage { message, target: _ }
-                                    if message.level == DiagnosticLevel::Warning =>
-                                {
-                                    1
-                                }
-                                _ => 0,
+        if let PlanStepExecution::Running(running) = &mut self.exec {
+            let deadline = Instant::now() + Duration::from_millis(20);
+            loop {
+                tokio::select! {
+                    res = running.out_stream.next_line() => {
+                        match res {
+                            Ok(Some(line)) => {
+                                // read_stdout_lines += 1;
+                                // running.out_buf.push_str(&line);
+                                let line = parse_output_line(&line);
+                                running.partial_output.push(line);
                             },
-                            OutputLine::Other(_) => 0,
-                        })
-                        .sum();
-
-                    let n_errors = lines
-                        .iter()
-                        .map(|line| match line {
-                            OutputLine::Cargo(cargo_message) => match cargo_message {
-                                CargoMessage::CompilerMessage { message, target: _ }
-                                    if message.level == DiagnosticLevel::Error =>
-                                {
-                                    1
-                                }
-                                _ => 0,
-                            },
-                            OutputLine::Other(_) => 0,
-                        })
-                        .sum();
-
-                    match (n_warnings, n_errors, result.success) {
-                        (0, 0, true) => PlanStepExecution::Success { output: lines },
-                        (0, 0, false) => PlanStepExecution::Error { output: lines },
-                        (1.., 0, _) => PlanStepExecution::Warning {
-                            warnings: n_warnings,
-                            output: lines,
-                        },
-                        (_, 1.., _) => PlanStepExecution::Failure {
-                            warnings: n_warnings,
-                            failures: n_errors,
-                            output: lines,
-                        },
+                            Ok(None) => {},
+                            Err(err) => {
+                                error!( ?err, "error reading stdout");
+                            }
+                        }
+                    }
+                    res = running.err_stream.next_line() => {
+                        match res {
+                            Ok(Some(line)) => {
+                                // read_stderr_lines += 1;
+                                // running.err_buf.push_str(&line);
+                                let line = parse_output_line(&line);
+                                running.partial_output.push(line);
+                            }
+                            Ok(None) => {},
+                            Err(err) => {
+                                error!( ?err, "error reading stderr");
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        break;
                     }
                 }
-                Ok(Err(e)) => {
-                    trace_dbg!(level: Level::ERROR, &e);
-                    let output = vec![OutputLine::Other(format!("Error: {}", e))];
-                    PlanStepExecution::Error { output }
-                }
-                Err(e) => {
-                    trace_dbg!(level: Level::ERROR, &e);
-                    let output = if e.is_cancelled() {
-                        vec![OutputLine::Other("Command was cancelled".to_string())]
+            }
+
+            match running.child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        let is_success = running
+                            .partial_output
+                            .iter()
+                            .flat_map(|line| match line {
+                                OutputLine::Cargo(CargoMessage::BuildFinished { success }) => {
+                                    Some(*success)
+                                }
+                                _ => None,
+                            })
+                            .last();
+                        match is_success {
+                            Some(succ) => {
+                                if succ {
+                                    self.exec = PlanStepExecution::Success {
+                                        output: running.partial_output.to_owned(),
+                                    };
+                                } else {
+                                    let n_warnings: usize = running
+                                        .partial_output
+                                        .iter()
+                                        .map(|line| match line {
+                                            OutputLine::Cargo(cargo_message) => match cargo_message
+                                            {
+                                                CargoMessage::CompilerMessage {
+                                                    message,
+                                                    target: _,
+                                                } if message.level == DiagnosticLevel::Warning => 1,
+                                                _ => 0,
+                                            },
+                                            OutputLine::Other(_) => 0,
+                                        })
+                                        .sum();
+
+                                    let n_errors: usize = running
+                                        .partial_output
+                                        .iter()
+                                        .map(|line| match line {
+                                            OutputLine::Cargo(cargo_message) => match cargo_message
+                                            {
+                                                CargoMessage::CompilerMessage {
+                                                    message,
+                                                    target: _,
+                                                } if message.level == DiagnosticLevel::Error => 1,
+                                                _ => 0,
+                                            },
+                                            OutputLine::Other(_) => 0,
+                                        })
+                                        .sum();
+                                    self.exec = PlanStepExecution::Failure {
+                                        warnings: n_warnings,
+                                        failures: n_errors,
+                                        output: running.partial_output.to_owned(),
+                                    };
+                                }
+                            }
+                            None => {
+                                self.exec = PlanStepExecution::Success {
+                                    output: running.partial_output.to_owned(),
+                                };
+                            }
+                        }
                     } else {
-                        vec![OutputLine::Other(format!("Task error: {}", e))]
-                    };
-                    PlanStepExecution::Error { output }
+                        error!(?status, "child exited with error");
+                        self.exec = PlanStepExecution::Error {
+                            output: running.partial_output.to_owned(),
+                        };
+                    }
                 }
-            };
-            self.exec = final_status;
+                Ok(None) => {}
+                Err(err) => {
+                    error!(?err, "error checking child status");
+                    self.exec = PlanStepExecution::Error {
+                        output: running.partial_output.to_owned(),
+                    };
+                }
+            }
         }
     }
 
@@ -323,9 +378,7 @@ impl PlanStep {
 #[derive(Debug)]
 pub enum PlanStepExecution {
     NotRun,
-    Running {
-        task: Option<JoinHandle<Result<CommandResult>>>,
-    },
+    Running(Box<Running>),
     Error {
         output: Vec<OutputLine>,
     },
@@ -341,6 +394,14 @@ pub enum PlanStepExecution {
     Success {
         output: Vec<OutputLine>,
     },
+}
+
+#[derive(Debug)]
+pub struct Running {
+    child: Child,
+    out_stream: Lines<BufReader<ChildStdout>>,
+    err_stream: Lines<BufReader<ChildStderr>>,
+    pub partial_output: Vec<OutputLine>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -376,7 +437,7 @@ impl Display for DiagnosticDisplayMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OutputLine {
     Cargo(CargoMessage),
     Other(String),

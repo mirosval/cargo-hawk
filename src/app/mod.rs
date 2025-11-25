@@ -1,5 +1,4 @@
 use crate::app::model::PlanStepExecution;
-use crate::trace_dbg;
 use crate::{Tui, cli::Args};
 use action::AppAction;
 use color_eyre::eyre::Result;
@@ -16,6 +15,7 @@ use ratatui::{
 };
 use std::path::PathBuf;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tracing::{error, info};
 
 mod action;
 mod event;
@@ -41,25 +41,17 @@ fn setup_file_watcher(
             {
                 let res = event_tx.send(AppEvent::FileChanged);
                 if let Err(err) = res {
-                    trace_dbg!("error sending FileChanged event");
-                    trace_dbg!(err);
+                    error!(?err, "error sending FileChanged event");
                 }
             }
         },
         Config::default(),
     )?;
 
-    let msg = format!("watching path: {:?}", path);
-    trace_dbg!(msg);
+    info!(?path, "watching path");
+
     watcher.watch(&path, RecursiveMode::Recursive)?;
     Ok(watcher)
-}
-
-#[derive(Debug)]
-pub struct CommandResult {
-    stdout: String,
-    stderr: String,
-    success: bool,
 }
 
 #[derive(Debug)]
@@ -417,7 +409,7 @@ impl App {
     }
 
     pub fn start_command(&mut self) -> Option<AppAction> {
-        trace_dbg!("start command");
+        info!("start command");
         self.clear_output();
         self.plan.start_next();
         None
