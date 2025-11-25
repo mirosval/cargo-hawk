@@ -11,14 +11,16 @@ pub mod cargo;
 
 #[derive(Debug, Default)]
 pub struct Plan {
-    pub commands: Vec<PlanStep>,
+    selected_idx: usize,
+    commands: Vec<PlanStep>,
 }
 
 impl Plan {
     pub fn from_string(s: &str) -> Plan {
         let steps: Vec<PlanStep> = s
             .split("\n")
-            .filter(|step| step.trim() != "")
+            .map(|step| step.trim().to_string())
+            .filter(|step| step != "")
             .map(|cmd| {
                 let name = cmd
                     .strip_prefix("cargo ")
@@ -28,15 +30,65 @@ impl Plan {
                 PlanStep {
                     name,
                     cmd: cmd.to_string(),
-                    exec: PlanStepExecution::NotRun,
+                    exec: PlanStepExecution::not_run(),
                 }
             })
             .collect();
-        Plan { commands: steps }
+        if steps.is_empty() {
+            Plan {
+                selected_idx: 0,
+                commands: vec![PlanStep {
+                    name: "Error".to_string(),
+                    cmd: "echo 1".to_string(),
+                    exec: PlanStepExecution::error(
+                        "The supplied plan did not contain any commands, please supply a plan in the one command per line format".to_string()
+                    ),
+                }],
+            }
+        } else {
+            Plan {
+                selected_idx: 0,
+                commands: steps,
+            }
+        }
     }
 }
 
 impl Plan {
+    pub fn select(&mut self, idx: usize) {
+        if self.commands.get(idx).is_some() {
+            self.selected_idx = idx;
+        } else {
+            self.selected_idx = 0;
+        }
+    }
+
+    pub fn selected_idx(&self) -> usize {
+        self.selected_idx
+    }
+
+    pub fn selected(&self) -> &PlanStep {
+        &self.commands[self.selected_idx]
+    }
+
+    fn selected_mut(&mut self) -> &mut PlanStep {
+        self.commands
+            .get_mut(self.selected_idx)
+            .expect("should always have a step")
+    }
+
+    pub fn current_output(&self) -> &Output {
+        self.selected().output()
+    }
+
+    pub fn current_step_len(&self) -> usize {
+        self.selected().cmd.len()
+    }
+
+    pub fn set_current_command(&mut self, cmd: String) {
+        self.selected_mut().cmd = cmd;
+    }
+
     pub fn start_next(&mut self) {
         if let Some(next) = self.next_step() {
             next.start();
@@ -50,6 +102,7 @@ impl Plan {
     }
 
     pub fn reset(&mut self) {
+        self.selected_idx = 0;
         self.commands.iter_mut().for_each(|step| {
             step.reset();
         });
@@ -63,7 +116,22 @@ impl Plan {
         self.commands.iter().any(|step| step.is_finished())
     }
 
-    pub fn best_step_to_present_idx(&self) -> Option<usize> {
+    pub fn len(&self) -> usize {
+        self.commands.len()
+    }
+
+    pub fn as_text(&self) -> String {
+        self.commands
+            .iter()
+            .map(|step| step.cmd.to_string())
+            .fold(String::new(), |acc, s| acc + "\n" + &s)
+    }
+
+    pub fn commands(&self) -> impl Iterator<Item = &PlanStep> {
+        self.commands.iter()
+    }
+
+    pub fn select_best_step_to_present_idx(&mut self) {
         let first_running_step = self
             .commands
             .iter()
@@ -105,13 +173,16 @@ impl Plan {
         } else {
             None
         };
-        first_running_step
+        let best = first_running_step
             .or(first_step_with_errors)
             .or(first_step_with_failures)
             .or(first_step_with_warnings)
             .or(last_successful_step)
             .or(last_step)
-            .or(first_step)
+            .or(first_step);
+        if let Some(best) = best {
+            self.selected_idx = best
+        }
     }
 
     fn next_step(&mut self) -> Option<&mut PlanStep> {
@@ -163,21 +234,21 @@ impl PlanStep {
                         child,
                         out_stream: BufReader::new(stdout).lines(),
                         err_stream: BufReader::new(stderr).lines(),
-                        partial_output: vec![],
+                        partial_output: Output::default(),
                     }));
                 } else {
                     self.exec = PlanStepExecution::Error {
-                        output: vec![OutputLine::Other(format!(
+                        output: Output::from_line(OutputLine::Other(format!(
                             "child process did not have stdout: {program:?}"
-                        ))],
+                        ))),
                     }
                 }
             }
             Err(err) => {
                 self.exec = PlanStepExecution::Error {
-                    output: vec![OutputLine::Other(format!(
+                    output: Output::from_line(OutputLine::Other(format!(
                         "failed to spawn child process: {err:?}"
-                    ))],
+                    ))),
                 }
             }
         }
@@ -225,16 +296,7 @@ impl PlanStep {
             match running.child.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
-                        let is_success = running
-                            .partial_output
-                            .iter()
-                            .flat_map(|line| match line {
-                                OutputLine::Cargo(CargoMessage::BuildFinished { success }) => {
-                                    Some(*success)
-                                }
-                                _ => None,
-                            })
-                            .last();
+                        let is_success = running.partial_output.has_success();
                         match is_success {
                             Some(succ) => {
                                 if succ {
@@ -242,40 +304,9 @@ impl PlanStep {
                                         output: running.partial_output.to_owned(),
                                     };
                                 } else {
-                                    let n_warnings: usize = running
-                                        .partial_output
-                                        .iter()
-                                        .map(|line| match line {
-                                            OutputLine::Cargo(cargo_message) => match cargo_message
-                                            {
-                                                CargoMessage::CompilerMessage {
-                                                    message,
-                                                    target: _,
-                                                } if message.level == DiagnosticLevel::Warning => 1,
-                                                _ => 0,
-                                            },
-                                            OutputLine::Other(_) => 0,
-                                        })
-                                        .sum();
-
-                                    let n_errors: usize = running
-                                        .partial_output
-                                        .iter()
-                                        .map(|line| match line {
-                                            OutputLine::Cargo(cargo_message) => match cargo_message
-                                            {
-                                                CargoMessage::CompilerMessage {
-                                                    message,
-                                                    target: _,
-                                                } if message.level == DiagnosticLevel::Error => 1,
-                                                _ => 0,
-                                            },
-                                            OutputLine::Other(_) => 0,
-                                        })
-                                        .sum();
                                     self.exec = PlanStepExecution::Failure {
-                                        warnings: n_warnings,
-                                        failures: n_errors,
+                                        warnings: running.partial_output.count_warnings(),
+                                        failures: running.partial_output.count_errors(),
                                         output: running.partial_output.to_owned(),
                                     };
                                 }
@@ -304,13 +335,24 @@ impl PlanStep {
         }
     }
 
+    fn output(&self) -> &Output {
+        match &self.exec {
+            PlanStepExecution::NotRun { output } => &output,
+            PlanStepExecution::Running(running) => &running.partial_output,
+            PlanStepExecution::Error { output } => &output,
+            PlanStepExecution::Warning { output, .. } => &output,
+            PlanStepExecution::Failure { output, .. } => &output,
+            PlanStepExecution::Success { output } => &output,
+        }
+    }
+
     fn reset(&mut self) {
-        self.exec = PlanStepExecution::NotRun;
+        self.exec = PlanStepExecution::not_run();
     }
 
     fn is_ready(&self) -> bool {
         match self.exec {
-            PlanStepExecution::NotRun => true,
+            PlanStepExecution::NotRun { .. } => true,
             PlanStepExecution::Running { .. } => false,
             PlanStepExecution::Error { .. } => false,
             PlanStepExecution::Warning { .. } => false,
@@ -321,7 +363,7 @@ impl PlanStep {
 
     fn is_running(&self) -> bool {
         match self.exec {
-            PlanStepExecution::NotRun => false,
+            PlanStepExecution::NotRun { .. } => false,
             PlanStepExecution::Running { .. } => true,
             PlanStepExecution::Error { .. } => false,
             PlanStepExecution::Warning { .. } => false,
@@ -332,7 +374,7 @@ impl PlanStep {
 
     fn is_finished(&self) -> bool {
         match self.exec {
-            PlanStepExecution::NotRun => false,
+            PlanStepExecution::NotRun { .. } => false,
             PlanStepExecution::Running { .. } => false,
             PlanStepExecution::Error { .. } => true,
             PlanStepExecution::Warning { .. } => true,
@@ -343,7 +385,7 @@ impl PlanStep {
 
     fn has_errors(&self) -> bool {
         match self.exec {
-            PlanStepExecution::NotRun => false,
+            PlanStepExecution::NotRun { .. } => false,
             PlanStepExecution::Running { .. } => false,
             PlanStepExecution::Error { .. } => true,
             PlanStepExecution::Warning { .. } => false,
@@ -354,7 +396,7 @@ impl PlanStep {
 
     fn has_failures(&self) -> bool {
         match self.exec {
-            PlanStepExecution::NotRun => false,
+            PlanStepExecution::NotRun { .. } => false,
             PlanStepExecution::Running { .. } => false,
             PlanStepExecution::Error { .. } => false,
             PlanStepExecution::Warning { .. } => false,
@@ -365,7 +407,7 @@ impl PlanStep {
 
     fn has_warnings(&self) -> bool {
         match self.exec {
-            PlanStepExecution::NotRun => false,
+            PlanStepExecution::NotRun { .. } => false,
             PlanStepExecution::Running { .. } => false,
             PlanStepExecution::Error { .. } => false,
             PlanStepExecution::Warning { .. } => true,
@@ -377,23 +419,39 @@ impl PlanStep {
 
 #[derive(Debug)]
 pub enum PlanStepExecution {
-    NotRun,
+    NotRun {
+        output: Output,
+    },
     Running(Box<Running>),
     Error {
-        output: Vec<OutputLine>,
+        output: Output,
     },
     Warning {
         warnings: usize,
-        output: Vec<OutputLine>,
+        output: Output,
     },
     Failure {
         warnings: usize,
         failures: usize,
-        output: Vec<OutputLine>,
+        output: Output,
     },
     Success {
-        output: Vec<OutputLine>,
+        output: Output,
     },
+}
+
+impl PlanStepExecution {
+    pub fn not_run() -> Self {
+        PlanStepExecution::NotRun {
+            output: Output::from_line(OutputLine::Other("Not started".to_string())),
+        }
+    }
+
+    pub fn error(err: String) -> Self {
+        PlanStepExecution::Error {
+            output: Output::from_line(OutputLine::Other(err)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -401,7 +459,7 @@ pub struct Running {
     child: Child,
     out_stream: Lines<BufReader<ChildStdout>>,
     err_stream: Lines<BufReader<ChildStderr>>,
-    pub partial_output: Vec<OutputLine>,
+    pub partial_output: Output,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -435,6 +493,96 @@ impl Display for DiagnosticDisplayMode {
         write!(f, "{}", self.as_str())?;
         Ok(())
     }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Output {
+    lines: Vec<OutputLine>,
+}
+
+impl Output {
+    pub fn from_line(line: OutputLine) -> Self {
+        Self { lines: vec![line] }
+    }
+
+    pub fn push(&mut self, line: OutputLine) {
+        self.lines.push(line)
+    }
+
+    pub fn count_warnings(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| match line {
+                OutputLine::Cargo(cargo_message) => match cargo_message {
+                    CargoMessage::CompilerMessage { message, target: _ }
+                        if message.level == DiagnosticLevel::Warning =>
+                    {
+                        1
+                    }
+                    _ => 0,
+                },
+                OutputLine::Other(_) => 0,
+            })
+            .sum()
+    }
+
+    pub fn count_errors(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| match line {
+                OutputLine::Cargo(cargo_message) => match cargo_message {
+                    CargoMessage::CompilerMessage { message, target: _ }
+                        if message.level == DiagnosticLevel::Error =>
+                    {
+                        1
+                    }
+                    _ => 0,
+                },
+                OutputLine::Other(_) => 0,
+            })
+            .sum()
+    }
+
+    pub fn has_success(&self) -> Option<bool> {
+        self.lines
+            .iter()
+            .flat_map(|line| match line {
+                OutputLine::Cargo(CargoMessage::BuildFinished { success }) => Some(*success),
+                _ => None,
+            })
+            .last()
+    }
+
+    pub fn as_sorted(&self) -> SortedOutput<'_> {
+        self.lines
+            .iter()
+            .fold(SortedOutput::default(), |mut acc, line| match line {
+                cargo @ OutputLine::Cargo(cargo_message) => {
+                    match cargo_message {
+                        CargoMessage::CompilerMessage { message, target: _ } => {
+                            match message.level {
+                                DiagnosticLevel::Error => acc.errors.push(cargo),
+                                DiagnosticLevel::Warning => acc.warnings.push(cargo),
+                                _ => acc.plain.push(cargo),
+                            }
+                        }
+                        _ => acc.plain.push(cargo),
+                    };
+                    acc
+                }
+                other @ OutputLine::Other(_) => {
+                    acc.plain.push(other);
+                    acc
+                }
+            })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SortedOutput<'a> {
+    pub plain: Vec<&'a OutputLine>,
+    pub warnings: Vec<&'a OutputLine>,
+    pub errors: Vec<&'a OutputLine>,
 }
 
 #[derive(Debug, Clone)]

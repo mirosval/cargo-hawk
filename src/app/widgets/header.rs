@@ -114,7 +114,7 @@ fn get_tab_color(idx: usize) -> Color {
 
 fn get_status_indicator(exec: &PlanStepExecution) -> String {
     match exec {
-        PlanStepExecution::NotRun => "".to_string(),
+        PlanStepExecution::NotRun { .. } => "".to_string(),
         PlanStepExecution::Running { .. } => "...".to_string(),
         PlanStepExecution::Warning { warnings, .. } => format!("{warnings}W"),
         PlanStepExecution::Failure {
@@ -135,16 +135,17 @@ mod tests {
 
     #[test]
     fn test_header() -> TestResult {
+        let not_run = PlanStepExecution::not_run();
         let tab1 = HeaderTab::builder()
             .id(0)
             .name("tab 1")
-            .exec(&PlanStepExecution::NotRun)
+            .exec(&not_run)
             .selected(true)
             .build();
         let tab2 = HeaderTab::builder()
             .id(1)
             .name("tab 2")
-            .exec(&PlanStepExecution::NotRun)
+            .exec(&not_run)
             .selected(true)
             .build();
         let tabs = vec![tab1, tab2];

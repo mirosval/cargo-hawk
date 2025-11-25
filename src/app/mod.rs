@@ -1,11 +1,9 @@
-use crate::app::model::PlanStepExecution;
 use crate::{Tui, cli::Args};
 use action::AppAction;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use model::DiagnosticDisplayMode;
 use model::Plan;
-use model::PlanStep;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
     Frame,
@@ -60,7 +58,6 @@ pub struct App {
     event_tx: UnboundedSender<AppEvent>,
     _file_watcher: RecommendedWatcher,
     plan: Plan,
-    selected: ListState,
     scroll_offset: u16,
     input_cursor: usize,
     input_focused: bool,
@@ -72,25 +69,13 @@ pub struct App {
 impl App {
     pub fn new(args: Args) -> Result<Self> {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-        let plan = Plan {
-            commands: vec![
-                PlanStep {
-                    name: "check".to_string(),
-                    cmd: "cargo check".to_string(),
-                    exec: PlanStepExecution::NotRun,
-                },
-                PlanStep {
-                    name: "test".to_string(),
-                    cmd: "cargo test".to_string(),
-                    exec: PlanStepExecution::NotRun,
-                },
-                PlanStep {
-                    name: "clippy".to_string(),
-                    cmd: "cargo clippy".to_string(),
-                    exec: PlanStepExecution::NotRun,
-                },
-            ],
-        };
+        let plan = Plan::from_string(
+            r#"
+            cargo check
+            cargo test
+            cargo clippy
+            "#,
+        );
 
         let mut selected = ListState::default();
         selected.select(Some(0));
@@ -103,7 +88,6 @@ impl App {
             event_tx,
             _file_watcher: file_watcher,
             plan,
-            selected,
             scroll_offset: 0,
             input_cursor: 0,
             input_focused: false,
@@ -147,6 +131,8 @@ impl App {
     }
 
     fn ui(&mut self, frame: &mut Frame) {
+        self.plan.select_best_step_to_present_idx();
+
         // Render the main app widget
         frame.render_widget(&*self, frame.area());
 
@@ -227,14 +213,6 @@ impl App {
             AppEvent::Render => None,
             AppEvent::FileChanged => {
                 self.plan.reset();
-
-                // If auto mode is on, start from the first step in the plan
-                if self.auto_mode
-                    && let Some(first_step_idx) = self.get_first_step_in_plan()
-                {
-                    self.selected.select(Some(first_step_idx));
-                }
-
                 self.start_command();
                 None
             }
@@ -283,29 +261,12 @@ impl App {
     }
 
     fn total_steps(&self) -> usize {
-        self.plan.commands.len()
-    }
-
-    fn get_first_non_successful_step(&self) -> Option<usize> {
-        for (step_idx, step) in self.plan.commands.iter().enumerate() {
-            if !matches!(step.exec, PlanStepExecution::Success { .. }) {
-                return Some(step_idx);
-            }
-        }
-        None
-    }
-
-    fn get_first_step_in_plan(&self) -> Option<usize> {
-        if !self.plan.commands.is_empty() {
-            Some(0)
-        } else {
-            None
-        }
+        self.plan.len()
     }
 
     fn switch_to_tab(&mut self, idx: usize) -> Option<AppAction> {
         if idx < self.total_steps() {
-            self.selected.select(Some(idx));
+            self.plan.select(idx);
             Some(AppAction::StartCommand)
         } else {
             None
@@ -321,22 +282,12 @@ impl App {
         tui.stop()?;
         tui.exit()?;
 
-        let plan_text = self
-            .plan
-            .commands
-            .iter()
-            .map(|step| step.cmd.to_string())
-            .fold(String::new(), |acc, s| acc + "\n" + &s);
-
-        let edited_plan = edit::edit(plan_text.trim()).unwrap();
+        let edited_plan = edit::edit(self.plan.as_text().trim()).unwrap();
 
         self.plan = Plan::from_string(&edited_plan);
-        if let Some(first_step_idx) = self.get_first_step_in_plan() {
-            self.selected.select(Some(first_step_idx));
 
-            if self.auto_mode {
-                self.start_command();
-            }
+        if self.auto_mode {
+            self.start_command();
         }
 
         tui.enter()?;
@@ -347,13 +298,13 @@ impl App {
     }
 
     fn update_cursor_for_current_input(&mut self) {
-        let idx = self.selected.selected().unwrap_or(0);
-        self.input_cursor = self.plan.commands[idx].cmd.len();
+        self.input_cursor = self.plan.current_step_len();
     }
 
     fn input_insert_char(&mut self, c: char) {
-        let idx = self.selected.selected().unwrap_or(0);
-        self.plan.commands[idx].cmd.insert(self.input_cursor, c);
+        let mut current_cmd = self.plan.selected().cmd.to_string();
+        current_cmd.insert(self.input_cursor, c);
+        self.plan.set_current_command(current_cmd);
         self.input_cursor += 1;
     }
 
@@ -361,8 +312,9 @@ impl App {
         if self.input_cursor == 0 {
             return;
         }
-        let idx = self.selected.selected().unwrap_or(0);
-        self.plan.commands[idx].cmd.remove(self.input_cursor - 1);
+        let mut current_cmd = self.plan.selected().cmd.to_string();
+        current_cmd.remove(self.input_cursor - 1);
+        self.plan.set_current_command(current_cmd);
         self.input_cursor -= 1;
     }
 
@@ -373,8 +325,7 @@ impl App {
     }
 
     fn input_move_cursor_right(&mut self) {
-        let idx = self.selected.selected().unwrap_or(0);
-        if self.input_cursor < self.plan.commands[idx].cmd.len() {
+        if self.input_cursor < self.plan.current_step_len() {
             self.input_cursor += 1;
         }
     }
@@ -393,13 +344,8 @@ impl App {
 
     fn toggle_auto(&mut self) -> Option<AppAction> {
         self.auto_mode = !self.auto_mode;
-        // If turning on auto mode, start from first non-successful step
-        if self.auto_mode
-            && let Some(first_step_idx) = self.get_first_non_successful_step()
-        {
-            self.selected.select(Some(first_step_idx));
+        if self.auto_mode {
             self.start_command();
-            // Note: auto mode stays on even if all steps are already successful
         }
         None
     }
@@ -421,7 +367,6 @@ impl App {
         // Auto-advance to next step if in auto mode and current step succeeded or has warnings
         if self.auto_mode && !self.plan.is_running() {
             self.plan.start_next();
-            self.selected.select(self.plan.best_step_to_present_idx());
         }
     }
 }

@@ -6,45 +6,21 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
-use crate::app::model::{
-    DiagnosticDisplayMode, OutputLine,
-    cargo::{CargoMessage, DiagnosticLevel},
-};
+use crate::app::model::{DiagnosticDisplayMode, Output};
 
 #[derive(Debug, Builder)]
-pub struct Output<'a> {
+pub struct OutputWidget<'a> {
     diagnostic_display_mode: &'a DiagnosticDisplayMode,
-    output: &'a Vec<OutputLine>,
+    output: &'a Output,
     scroll_offset: u16,
 }
 
-impl Widget for &Output<'_> {
+impl Widget for &OutputWidget<'_> {
     fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
     where
         Self: Sized,
     {
-        let sorted = self
-            .output
-            .iter()
-            .fold(SortedOutput::default(), |mut acc, line| match line {
-                cargo @ OutputLine::Cargo(cargo_message) => {
-                    match cargo_message {
-                        CargoMessage::CompilerMessage { message, target: _ } => {
-                            match message.level {
-                                DiagnosticLevel::Error => acc.errors.push(cargo),
-                                DiagnosticLevel::Warning => acc.warnings.push(cargo),
-                                _ => acc.plain.push(cargo),
-                            }
-                        }
-                        _ => acc.plain.push(cargo),
-                    };
-                    acc
-                }
-                other @ OutputLine::Other(_) => {
-                    acc.plain.push(other);
-                    acc
-                }
-            });
+        let sorted = self.output.as_sorted();
 
         // Parse ANSI color codes in the output
         let visible_output: Vec<Line> = sorted
@@ -78,11 +54,4 @@ impl Widget for &Output<'_> {
 
         output_panel.render(area, buf);
     }
-}
-
-#[derive(Debug, Default)]
-struct SortedOutput<'a> {
-    plain: Vec<&'a OutputLine>,
-    warnings: Vec<&'a OutputLine>,
-    errors: Vec<&'a OutputLine>,
 }
