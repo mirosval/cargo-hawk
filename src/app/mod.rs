@@ -70,11 +70,9 @@ impl App {
     pub fn new(args: Args) -> Result<Self> {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         let plan = Plan::from_string(
-            r#"
-            cargo check
+            r#"cargo check
             cargo test
-            cargo clippy
-            "#,
+            cargo clippy"#,
         );
 
         let mut selected = ListState::default();
