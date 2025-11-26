@@ -4,18 +4,21 @@ use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use model::DiagnosticDisplayMode;
 use model::Plan;
-use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::DebouncedEvent;
+use notify_debouncer_mini::Debouncer;
+use notify_debouncer_mini::new_debouncer_opt;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     prelude::Backend,
-    widgets::ListState,
 };
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::Instant;
 use tracing::debug;
+use tracing::warn;
 use tracing::{error, info};
 
 mod action;
@@ -25,42 +28,51 @@ mod widgets;
 
 pub use event::AppEvent;
 
+type FileWatcher = Debouncer<RecommendedWatcher>;
+
 fn setup_file_watcher(
     path: PathBuf,
     event_tx: UnboundedSender<AppEvent>,
     extensions: Vec<String>,
-) -> Result<RecommendedWatcher> {
-    let mut watcher = RecommendedWatcher::new(
-        move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res
-                && (event.kind.is_modify() || event.kind.is_create())
-                && event
-                    .paths
-                    .iter()
-                    .flat_map(|path| path.extension().and_then(|s| s.to_str()))
-                    .any(|ext| extensions.contains(&ext.to_string()))
-            {
-                debug!(?event, "files changed");
-                let res = event_tx.send(AppEvent::FileChanged);
-                if let Err(err) = res {
-                    error!(?err, "error sending FileChanged event");
+) -> Result<FileWatcher> {
+    let notify_config = notify::Config::default();
+    let config = notify_debouncer_mini::Config::default()
+        .with_timeout(Duration::from_secs(1))
+        .with_notify_config(notify_config);
+    let mut debounced_watcher = new_debouncer_opt::<_, RecommendedWatcher>(
+        config,
+        move |res: std::result::Result<Vec<DebouncedEvent>, notify::Error>| match res {
+            Err(err) => {
+                error!(?err, "error from file watcher");
+            }
+            Ok(events) => {
+                if events.iter().any(|event| {
+                    if let Some(ext) = event.path.extension() {
+                        extensions.contains(&ext.to_string_lossy().to_string())
+                    } else {
+                        false
+                    }
+                }) {
+                    debug!(num_events = events.len(), "files changed");
+                    if let Err(err) = event_tx.send(AppEvent::FileChanged) {
+                        error!(?err, "error sending FileChanged event");
+                    }
                 }
             }
         },
-        Config::default(),
     )?;
 
     info!(?path, "watching path");
-
+    let watcher = debounced_watcher.watcher();
     watcher.watch(&path, RecursiveMode::Recursive)?;
-    Ok(watcher)
+    Ok(debounced_watcher)
 }
 
 #[derive(Debug)]
 pub struct App {
     event_rx: UnboundedReceiver<AppEvent>,
     event_tx: UnboundedSender<AppEvent>,
-    _file_watcher: RecommendedWatcher,
+    _file_watcher: FileWatcher,
     plan: Plan,
     scroll_offset: u16,
     input_cursor: usize,
@@ -78,9 +90,6 @@ impl App {
             cargo test
             cargo clippy"#,
         );
-
-        let mut selected = ListState::default();
-        selected.select(Some(0));
 
         // TODO: Decouple this
         let file_watcher =
@@ -112,6 +121,7 @@ impl App {
                 self.ui(f);
             })?;
 
+            let start = Instant::now();
             if let Some(event) = self.event_rx.recv().await {
                 let mut maybe_action = self.handle_event(event).await;
                 while let Some(action) = maybe_action {
@@ -122,6 +132,10 @@ impl App {
                     }
                 }
             };
+            let event_handling_duration = Instant::now() - start;
+            if event_handling_duration > Duration::from_millis(50) {
+                warn!(?event_handling_duration, "event loop slow");
+            }
             if self.should_quit {
                 break;
             }
@@ -133,7 +147,9 @@ impl App {
     }
 
     fn ui(&mut self, frame: &mut Frame) {
-        self.plan.select_best_step_to_present_idx();
+        if self.auto_mode {
+            self.plan.select_best_step_to_present_idx();
+        }
 
         // Render the main app widget
         frame.render_widget(&*self, frame.area());
@@ -157,13 +173,6 @@ impl App {
     }
 
     async fn handle_event(&mut self, event: AppEvent) -> Option<AppAction> {
-        // Check if running command has completed
-        let start = Instant::now();
-        self.check_command_completion().await;
-        let check_command_duration = Instant::now() - start;
-        if check_command_duration > Duration::from_millis(30) {
-            debug!(?check_command_duration, "check command");
-        }
         match event {
             AppEvent::Key(key) => {
                 debug!(?key, "key pressed");
@@ -217,7 +226,16 @@ impl App {
             AppEvent::FocusGained => None,
             AppEvent::Paste(_) => None,
             AppEvent::Error => None,
-            AppEvent::Tick => None,
+            AppEvent::Tick => {
+                // Check if running command has completed
+                let start = Instant::now();
+                self.check_command_completion().await;
+                let check_command_duration = Instant::now() - start;
+                if check_command_duration > Duration::from_millis(30) {
+                    debug!(?check_command_duration, "check command");
+                }
+                None
+            }
             AppEvent::Render => None,
             AppEvent::FileChanged => {
                 self.plan.reset();
@@ -274,6 +292,7 @@ impl App {
     }
 
     fn switch_to_tab(&mut self, idx: usize) -> Option<AppAction> {
+        self.plan.reset();
         if idx < self.total_steps() {
             self.plan.select(idx);
             Some(AppAction::StartCommand)
@@ -284,7 +303,7 @@ impl App {
 
     fn cycle_diagnostic_mode(&mut self) -> Option<AppAction> {
         self.diagnostic_display_mode = self.diagnostic_display_mode.next();
-        Some(AppAction::StartCommand)
+        None
     }
 
     fn start_plan_editing<B: Backend>(&mut self, tui: &mut Tui<B>) -> Result<()> {
@@ -295,9 +314,7 @@ impl App {
 
         self.plan = Plan::from_string(&edited_plan);
 
-        if self.auto_mode {
-            self.start_command();
-        }
+        self.start_command();
 
         tui.enter()?;
         tui.clear()?;
@@ -353,9 +370,7 @@ impl App {
 
     fn toggle_auto(&mut self) -> Option<AppAction> {
         self.auto_mode = !self.auto_mode;
-        if self.auto_mode {
-            self.start_command();
-        }
+        self.start_command();
         None
     }
 
@@ -364,18 +379,18 @@ impl App {
     }
 
     pub fn start_command(&mut self) -> Option<AppAction> {
-        info!("start command");
         self.clear_output();
-        self.plan.start_next();
+        self.plan.start_selected();
         None
     }
 
     async fn check_command_completion(&mut self) {
         self.plan.check().await;
-
-        // Auto-advance to next step if in auto mode and current step succeeded or has warnings
         if self.auto_mode && !self.plan.is_running() {
-            self.plan.start_next();
+            self.plan.advance();
+            if !self.plan.is_finished() {
+                self.start_command();
+            }
         }
     }
 }

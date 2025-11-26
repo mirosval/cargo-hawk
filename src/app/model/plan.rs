@@ -80,16 +80,18 @@ impl Plan {
         self.selected_mut().cmd = cmd;
     }
 
-    pub fn start_next(&mut self) {
-        if let Some(next) = self.next_step() {
-            next.start();
+    pub fn advance(&mut self) {
+        if let Some(idx) = self.next_step_idx() {
+            self.selected_idx = idx;
         }
     }
 
+    pub fn start_selected(&mut self) {
+        self.selected_mut().start();
+    }
+
     pub async fn check(&mut self) {
-        for cmd in self.commands.iter_mut() {
-            cmd.check().await;
-        }
+        self.selected_mut().check().await
     }
 
     pub fn reset(&mut self) {
@@ -104,7 +106,7 @@ impl Plan {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.commands.iter().any(|step| step.is_finished())
+        self.commands.iter().all(|step| step.is_finished())
     }
 
     pub fn len(&self) -> usize {
@@ -176,8 +178,14 @@ impl Plan {
         }
     }
 
-    fn next_step(&mut self) -> Option<&mut PlanStep> {
-        self.commands.iter_mut().find(|step| step.is_ready())
+    fn next_step_idx(&mut self) -> Option<usize> {
+        self.commands.iter().enumerate().find_map(|(idx, step)| {
+            if !step.has_been_started() {
+                Some(idx)
+            } else {
+                None
+            }
+        })
     }
 }
 

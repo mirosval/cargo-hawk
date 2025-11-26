@@ -20,6 +20,7 @@ pub struct PlanStep {
 
 impl PlanStep {
     pub fn start(&mut self) {
+        info!(?self.cmd, "start command");
         // Parse the command string into program and args
         let parts: Vec<String> = self.cmd.split_whitespace().map(|s| s.to_string()).collect();
 
@@ -45,7 +46,6 @@ impl PlanStep {
             .stderr(Stdio::piped())
             .spawn();
 
-        info!(?child, "spawned child");
         match child {
             Ok(mut child) => {
                 if let Some(stdout) = child.stdout.take()
@@ -77,7 +77,7 @@ impl PlanStep {
 
     pub async fn check(&mut self) {
         if let PlanStepExecution::Running(running) = &mut self.exec {
-            let deadline = Instant::now() + Duration::from_millis(20);
+            let deadline = Instant::now() + Duration::from_millis(5);
             loop {
                 tokio::select! {
                     res = running.out_stream.next_line() => {
@@ -117,6 +117,7 @@ impl PlanStep {
             match running.child.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
+                        info!(?status, "child exited successfully");
                         let is_success = running.partial_output.has_success();
                         match is_success {
                             Some(succ) => {
@@ -174,14 +175,14 @@ impl PlanStep {
         self.exec = PlanStepExecution::not_run();
     }
 
-    pub fn is_ready(&self) -> bool {
+    pub fn has_been_started(&self) -> bool {
         match self.exec {
-            PlanStepExecution::NotRun { .. } => true,
-            PlanStepExecution::Running { .. } => false,
-            PlanStepExecution::Error { .. } => false,
-            PlanStepExecution::Warning { .. } => false,
-            PlanStepExecution::Failure { .. } => false,
-            PlanStepExecution::Success { .. } => false,
+            PlanStepExecution::NotRun { .. } => false,
+            PlanStepExecution::Running { .. } => true,
+            PlanStepExecution::Error { .. } => true,
+            PlanStepExecution::Warning { .. } => true,
+            PlanStepExecution::Failure { .. } => true,
+            PlanStepExecution::Success { .. } => true,
         }
     }
 

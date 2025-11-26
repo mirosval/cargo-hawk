@@ -18,6 +18,7 @@ async fn main() -> Result<()> {
         Tui::new(terminal, app.event_tx())
     };
 
+    info!("--------------------------------------------------------------------------------");
     info!("starting hawk");
     app.run(&mut tui).await?;
 
