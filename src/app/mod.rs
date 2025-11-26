@@ -405,10 +405,7 @@ mod tests {
 
     #[test]
     fn test_first_screen() -> TestResult {
-        let app = App::new(Args {
-            path: PathBuf::from("."),
-            verbose: false,
-        })?;
+        let app = App::new(Args::default())?;
         let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
         terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
         assert_snapshot!(terminal.backend());
@@ -417,10 +414,7 @@ mod tests {
 
     #[test]
     fn test_auto_disabled() -> TestResult {
-        let mut app = App::new(Args {
-            path: PathBuf::from("."),
-            verbose: false,
-        })?;
+        let mut app = App::new(Args::default())?;
         app.auto_mode = false;
         let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
         terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;

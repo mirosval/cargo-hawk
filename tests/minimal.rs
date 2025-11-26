@@ -5,10 +5,7 @@ use testresult::TestResult;
 
 #[test]
 fn test_minimal() -> TestResult {
-    let app = App::new(Args {
-        path: ".".into(),
-        verbose: false,
-    })?;
+    let app = App::new(Args::default())?;
     let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
     terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
     assert_snapshot!(terminal.backend());

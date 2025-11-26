@@ -10,7 +10,7 @@ print-%  : ; @echo $*=$($*)
 
 .PHONY: dev
 dev:
-	RUST_LOG=debug cargo run hawk --verbose
+	RUST_LOG=debug cargo run hawk --log-file cargo_hawk.log
 
 tail:
 	tspin cargo_hawk.log -f

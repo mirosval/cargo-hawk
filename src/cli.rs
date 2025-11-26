@@ -25,7 +25,7 @@ pub enum HawkCommand {
     Hawk(Args),
 }
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Default, Parser)]
 #[command(version, about = "A file watcher with interactive command runner for Rust projects", long_about = None)]
 pub struct Args {
     /// Directory to watch (defaults to current directory)
@@ -33,8 +33,8 @@ pub struct Args {
     pub path: PathBuf,
 
     /// Enable logging into cargo_hawk.log
-    #[arg(short, long, default_value = "false")]
-    pub verbose: bool,
+    #[arg(short, long)]
+    pub log_file: Option<String>,
 }
 
 #[cfg(test)]

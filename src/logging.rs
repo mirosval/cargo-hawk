@@ -4,12 +4,14 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-pub fn setup_logging(verbose: bool) -> Result<()> {
-    if !verbose {
+pub fn setup_logging(maybe_log_file: Option<String>) -> Result<()> {
+    let log_file_path = if let Some(path) = maybe_log_file {
+        path
+    } else {
         return Ok(());
-    }
+    };
 
-    let log_file = std::fs::File::create("cargo_hawk.log")?;
+    let log_file = std::fs::File::create(log_file_path)?;
 
     let file_subscriber = tracing_subscriber::fmt::layer()
         .with_file(true)

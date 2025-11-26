@@ -8,7 +8,7 @@ use tracing::info;
 async fn main() -> Result<()> {
     let args = cli::parse();
 
-    setup_logging(args.verbose)?;
+    setup_logging(args.log_file.clone())?;
     color_eyre::install()?;
 
     let mut app = App::new(args)?;
