@@ -72,14 +72,6 @@ impl Plan {
         self.selected().output()
     }
 
-    pub fn current_step_len(&self) -> usize {
-        self.selected().cmd.len()
-    }
-
-    pub fn set_current_command(&mut self, cmd: String) {
-        self.selected_mut().cmd = cmd;
-    }
-
     pub fn advance(&mut self) {
         if let Some(idx) = self.next_step_idx() {
             self.selected_idx = idx;

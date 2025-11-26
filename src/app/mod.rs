@@ -9,11 +9,7 @@ use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::DebouncedEvent;
 use notify_debouncer_mini::Debouncer;
 use notify_debouncer_mini::new_debouncer_opt;
-use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout},
-    prelude::Backend,
-};
+use ratatui::{Frame, prelude::Backend};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -76,8 +72,6 @@ pub struct App {
     _file_watcher: FileWatcher,
     plan: Plan,
     scroll_offset: u16,
-    input_cursor: usize,
-    input_focused: bool,
     auto_mode: bool,
     diagnostic_display_mode: DiagnosticDisplayMode,
     should_quit: bool,
@@ -101,8 +95,6 @@ impl App {
             _file_watcher: file_watcher,
             plan,
             scroll_offset: 0,
-            input_cursor: 0,
-            input_focused: false,
             auto_mode: true,
             diagnostic_display_mode: DiagnosticDisplayMode::First,
             should_quit: false,
@@ -154,23 +146,6 @@ impl App {
 
         // Render the main app widget
         frame.render_widget(&*self, frame.area());
-
-        // Handle cursor positioning (can't be done in Widget trait)
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(10),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
-            .split(frame.area());
-
-        // Set cursor position in the input field (only visible when focused)
-        if self.input_focused {
-            frame
-                .set_cursor_position((chunks[2].x + self.input_cursor as u16 + 1, chunks[2].y + 1));
-        }
     }
 
     async fn handle_event(&mut self, event: AppEvent) -> Option<AppAction> {
@@ -184,17 +159,6 @@ impl App {
                         .contains(crossterm::event::KeyModifiers::CONTROL)
                 {
                     Some(AppAction::CancelCommand)
-                } else if self.input_focused {
-                    // FOCUSED MODE - editing command input
-                    match key.code {
-                        KeyCode::Esc => Some(AppAction::ExitCommandEditMode),
-                        KeyCode::Enter => Some(AppAction::EnterCommandEditMode),
-                        KeyCode::Backspace => Some(AppAction::CommandEditModeBackspace),
-                        KeyCode::Left => Some(AppAction::CommandEditModeLeft),
-                        KeyCode::Right => Some(AppAction::CommandEditModeRight),
-                        KeyCode::Char(c) => Some(AppAction::CommandEditModeChar(c)),
-                        _ => None,
-                    }
                 } else {
                     // UNFOCUSED MODE - navigation
                     match key.code {
@@ -202,15 +166,10 @@ impl App {
                             self.should_quit = true;
                             None
                         }
-                        KeyCode::Char('i') => {
-                            self.input_focused = true;
-                            None
-                        }
                         KeyCode::Char('a') => Some(AppAction::ToggleAuto),
                         KeyCode::Char('p') => Some(AppAction::EditPlan),
                         KeyCode::Down | KeyCode::Char('j') => Some(AppAction::ScrollDown),
                         KeyCode::Up | KeyCode::Char('k') => Some(AppAction::ScrollUp),
-                        KeyCode::Enter | KeyCode::Char('r') => Some(AppAction::ToggleAuto),
                         KeyCode::Char(c @ '1'..='9') => {
                             let idx = c.to_digit(10).unwrap() as usize - 1;
                             Some(AppAction::SwitchTab(idx))
@@ -264,31 +223,6 @@ impl App {
             AppAction::ToggleAuto => self.toggle_auto(),
             AppAction::SwitchTab(idx) => self.switch_to_tab(idx),
             AppAction::CycleDiagnosticMode => self.cycle_diagnostic_mode(),
-            AppAction::EnterCommandEditMode => {
-                self.update_cursor_for_current_input();
-                self.input_focused = true;
-                None
-            }
-            AppAction::ExitCommandEditMode => {
-                self.input_focused = false;
-                Some(AppAction::StartCommand)
-            }
-            AppAction::CommandEditModeBackspace => {
-                self.input_delete_char();
-                None
-            }
-            AppAction::CommandEditModeLeft => {
-                self.input_move_cursor_left();
-                None
-            }
-            AppAction::CommandEditModeRight => {
-                self.input_move_cursor_right();
-                None
-            }
-            AppAction::CommandEditModeChar(c) => {
-                self.input_insert_char(c);
-                None
-            }
         }
     }
 
@@ -326,39 +260,6 @@ impl App {
         tui.start()?;
 
         Ok(())
-    }
-
-    fn update_cursor_for_current_input(&mut self) {
-        self.input_cursor = self.plan.current_step_len();
-    }
-
-    fn input_insert_char(&mut self, c: char) {
-        let mut current_cmd = self.plan.selected().cmd.to_string();
-        current_cmd.insert(self.input_cursor, c);
-        self.plan.set_current_command(current_cmd);
-        self.input_cursor += 1;
-    }
-
-    fn input_delete_char(&mut self) {
-        if self.input_cursor == 0 {
-            return;
-        }
-        let mut current_cmd = self.plan.selected().cmd.to_string();
-        current_cmd.remove(self.input_cursor - 1);
-        self.plan.set_current_command(current_cmd);
-        self.input_cursor -= 1;
-    }
-
-    fn input_move_cursor_left(&mut self) {
-        if self.input_cursor > 0 {
-            self.input_cursor -= 1;
-        }
-    }
-
-    fn input_move_cursor_right(&mut self) {
-        if self.input_cursor < self.plan.current_step_len() {
-            self.input_cursor += 1;
-        }
     }
 
     fn scroll_up(&mut self) -> Option<AppAction> {

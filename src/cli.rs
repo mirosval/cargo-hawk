@@ -25,7 +25,7 @@ pub enum HawkCommand {
     Hawk(Args),
 }
 
-#[derive(Debug, Default, Parser)]
+#[derive(Debug, Parser)]
 #[command(version, about = "A file watcher with interactive command runner for Rust projects", long_about = None)]
 pub struct Args {
     /// Directory to watch (defaults to current directory)
@@ -37,8 +37,19 @@ pub struct Args {
     pub log_file: Option<String>,
 }
 
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            path: ".".into(),
+            log_file: Default::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
+
     use super::*;
 
     fn parse(command: &str) -> Result<Args, clap::Error> {
@@ -50,5 +61,10 @@ mod tests {
     fn test_argparsing() {
         assert!(parse("cargo hawk").is_ok());
         assert!(parse("cargo-hawk hawk").is_ok());
+    }
+
+    #[test]
+    fn test_cli() {
+        HawkArgs::command().debug_assert();
     }
 }
