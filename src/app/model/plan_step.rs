@@ -168,6 +168,9 @@ impl PlanStep {
     }
 
     pub fn reset(&mut self) {
+        if let PlanStepExecution::Running(running) = &mut self.exec {
+            running.kill();
+        }
         self.exec = PlanStepExecution::not_run();
     }
 

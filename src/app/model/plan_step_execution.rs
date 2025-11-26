@@ -2,6 +2,7 @@ use tokio::{
     io::{BufReader, Lines},
     process::{Child, ChildStderr, ChildStdout},
 };
+use tracing::{debug, error};
 
 use crate::app::model::{Output, output_line::OutputLine};
 
@@ -48,4 +49,13 @@ pub struct Running {
     pub out_stream: Lines<BufReader<ChildStdout>>,
     pub err_stream: Lines<BufReader<ChildStderr>>,
     pub partial_output: Output,
+}
+
+impl Running {
+    pub fn kill(&mut self) {
+        debug!(?self, "kill child process");
+        if let Err(err) = self.child.start_kill() {
+            error!(?err, "failed to kill child process");
+        }
+    }
 }

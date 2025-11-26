@@ -10,7 +10,10 @@ print-%  : ; @echo $*=$($*)
 
 .PHONY: dev
 dev:
-	cargo watch -c -x 'check' -x 'test' -x 'run'
+	RUST_LOG=debug cargo run hawk --verbose
+
+tail:
+	tspin cargo_hawk.log -f
 
 outdated:
 	cargo outdated -R
@@ -23,3 +26,4 @@ update:
 
 clean:
 	cargo clean
+

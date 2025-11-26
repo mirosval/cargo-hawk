@@ -70,13 +70,12 @@
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
           packages = with pkgs; [
+            cargo-hawk
             cargo-insta
             cargo-outdated
             cargo-udeps
-            cargo-watch
             rust-analyzer
-            xh
-            cargo-hawk
+            tailspin
           ];
         };
       }

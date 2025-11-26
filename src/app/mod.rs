@@ -12,7 +12,10 @@ use ratatui::{
     widgets::ListState,
 };
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::time::Instant;
+use tracing::debug;
 use tracing::{error, info};
 
 mod action;
@@ -37,6 +40,7 @@ fn setup_file_watcher(
                     .flat_map(|path| path.extension().and_then(|s| s.to_str()))
                     .any(|ext| extensions.contains(&ext.to_string()))
             {
+                debug!(?event, "files changed");
                 let res = event_tx.send(AppEvent::FileChanged);
                 if let Err(err) = res {
                     error!(?err, "error sending FileChanged event");
@@ -154,9 +158,15 @@ impl App {
 
     async fn handle_event(&mut self, event: AppEvent) -> Option<AppAction> {
         // Check if running command has completed
+        let start = Instant::now();
         self.check_command_completion().await;
+        let check_command_duration = Instant::now() - start;
+        if check_command_duration > Duration::from_millis(30) {
+            debug!(?check_command_duration, "check command");
+        }
         match event {
             AppEvent::Key(key) => {
+                debug!(?key, "key pressed");
                 // Ctrl+C always quits
                 if key.code == KeyCode::Char('c')
                     && key
@@ -218,6 +228,7 @@ impl App {
     }
 
     async fn update(&mut self, action: AppAction) -> Option<AppAction> {
+        debug!(?action, "update action");
         match action {
             AppAction::CancelCommand => {
                 self.should_quit = true;
