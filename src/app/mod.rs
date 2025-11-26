@@ -2,6 +2,7 @@ use crate::{Tui, cli::Args};
 use action::AppAction;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
+use crossterm::event::MouseEventKind;
 use model::DiagnosticDisplayMode;
 use model::Plan;
 use notify::{RecommendedWatcher, RecursiveMode};
@@ -207,7 +208,7 @@ impl App {
                         }
                         KeyCode::Char('a') => Some(AppAction::ToggleAuto),
                         KeyCode::Char('p') => Some(AppAction::EditPlan),
-                        KeyCode::Down | KeyCode::Char('j') => Some(AppAction::ScrollUp),
+                        KeyCode::Down | KeyCode::Char('j') => Some(AppAction::ScrollDown),
                         KeyCode::Up | KeyCode::Char('k') => Some(AppAction::ScrollUp),
                         KeyCode::Enter | KeyCode::Char('r') => Some(AppAction::ToggleAuto),
                         KeyCode::Char(c @ '1'..='9') => {
@@ -220,7 +221,11 @@ impl App {
                 }
             }
             AppEvent::Init => Some(AppAction::StartCommand),
-            AppEvent::Mouse(_) => None,
+            AppEvent::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollDown => Some(AppAction::ScrollDown),
+                MouseEventKind::ScrollUp => Some(AppAction::ScrollUp),
+                _ => None,
+            },
             AppEvent::Resize(_, _) => None,
             AppEvent::FocusLost => None,
             AppEvent::FocusGained => None,

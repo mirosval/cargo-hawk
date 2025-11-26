@@ -10,10 +10,10 @@ use crossterm::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         Event, EventStream, KeyEventKind,
     },
-    terminal::{enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode},
 };
 use futures::{FutureExt, StreamExt};
-use ratatui::{prelude::Backend, Terminal};
+use ratatui::{Terminal, prelude::Backend};
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -37,7 +37,7 @@ impl<B: Backend> Tui<B> {
         let frame_rate = 60.0;
         let cancellation_token = CancellationToken::new();
         let task = tokio::spawn(async { Ok(()) });
-        let mouse = false;
+        let mouse = true;
         let paste = false;
         Self {
             tick_rate,
