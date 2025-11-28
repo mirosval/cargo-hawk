@@ -70,6 +70,8 @@
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
           packages = with pkgs; [
+            apple-sdk_15
+            cargo-flamegraph
             cargo-hawk
             cargo-insta
             cargo-outdated
