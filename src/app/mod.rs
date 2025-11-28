@@ -3,6 +3,7 @@ use action::AppAction;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::MouseEventKind;
+use ignore::gitignore::GitignoreBuilder;
 use model::DiagnosticDisplayMode;
 use model::Plan;
 use notify::{RecommendedWatcher, RecursiveMode};
@@ -32,6 +33,7 @@ fn setup_file_watcher(
     event_tx: UnboundedSender<AppEvent>,
     extensions: Vec<String>,
 ) -> Result<FileWatcher> {
+    let gitignore = GitignoreBuilder::new(&path).build()?;
     let notify_config = notify::Config::default();
     let config = notify_debouncer_mini::Config::default()
         .with_timeout(Duration::from_secs(1))
@@ -43,13 +45,21 @@ fn setup_file_watcher(
                 error!(?err, "error from file watcher");
             }
             Ok(events) => {
-                if events.iter().any(|event| {
-                    if let Some(ext) = event.path.extension() {
-                        extensions.contains(&ext.to_string_lossy().to_string())
-                    } else {
-                        false
-                    }
-                }) {
+                let any_path_changed = events
+                    .iter()
+                    .filter(|event| {
+                        if let Some(ext) = event.path.extension() {
+                            extensions.contains(&ext.to_string_lossy().to_string())
+                        } else {
+                            false
+                        }
+                    })
+                    .any(|event| {
+                        !gitignore
+                            .matched_path_or_any_parents(&event.path, event.path.is_dir())
+                            .is_ignore()
+                    });
+                if any_path_changed {
                     debug!(num_events = events.len(), "files changed");
                     if let Err(err) = event_tx.send(AppEvent::FileChanged) {
                         error!(?err, "error sending FileChanged event");

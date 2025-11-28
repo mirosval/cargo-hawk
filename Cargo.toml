@@ -24,6 +24,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tracing-error = "0.2.1"
 notify-debouncer-mini = "0.7.0"
+ignore = "0.4.25"
 
 [dev-dependencies]
 insta = { version = "1.43.2", features = ["yaml"] }
