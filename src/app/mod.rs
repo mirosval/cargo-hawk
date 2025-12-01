@@ -33,7 +33,14 @@ fn setup_file_watcher(
     event_tx: UnboundedSender<AppEvent>,
     extensions: Vec<String>,
 ) -> Result<FileWatcher> {
-    let gitignore = GitignoreBuilder::new(&path).build()?;
+    let gitignore = {
+        let path = std::path::absolute(&path)?;
+        let mut gitignore_builder = GitignoreBuilder::new(&path);
+        // TODO: Need to walk the current project and find all .gitignores, not just the top one
+        gitignore_builder.add(path.join(".gitignore"));
+        let gitignore = gitignore_builder.build()?;
+        gitignore
+    };
     let notify_config = notify::Config::default();
     let config = notify_debouncer_mini::Config::default()
         .with_timeout(Duration::from_secs(1))
@@ -55,9 +62,9 @@ fn setup_file_watcher(
                         }
                     })
                     .filter(|event| {
-                        !gitignore
-                            .matched_path_or_any_parents(&event.path, event.path.is_dir())
-                            .is_ignore()
+                        let mat =
+                            gitignore.matched_path_or_any_parents(&event.path, event.path.is_dir());
+                        !mat.is_ignore()
                     })
                     .collect();
                 if !path_changed.is_empty() {
