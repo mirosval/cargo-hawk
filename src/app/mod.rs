@@ -45,8 +45,8 @@ fn setup_file_watcher(
                 error!(?err, "error from file watcher");
             }
             Ok(events) => {
-                let any_path_changed = events
-                    .iter()
+                let path_changed: Vec<DebouncedEvent> = events
+                    .into_iter()
                     .filter(|event| {
                         if let Some(ext) = event.path.extension() {
                             extensions.contains(&ext.to_string_lossy().to_string())
@@ -54,13 +54,18 @@ fn setup_file_watcher(
                             false
                         }
                     })
-                    .any(|event| {
+                    .filter(|event| {
                         !gitignore
                             .matched_path_or_any_parents(&event.path, event.path.is_dir())
                             .is_ignore()
-                    });
-                if any_path_changed {
-                    debug!(num_events = events.len(), "files changed");
+                    })
+                    .collect();
+                if !path_changed.is_empty() {
+                    debug!(
+                        num_events = path_changed.len(),
+                        ?path_changed,
+                        "files changed"
+                    );
                     if let Err(err) = event_tx.send(AppEvent::FileChanged) {
                         error!(?err, "error sending FileChanged event");
                     }

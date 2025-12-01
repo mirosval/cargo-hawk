@@ -2,7 +2,7 @@ use tokio::{
     io::{BufReader, Lines},
     process::{Child, ChildStderr, ChildStdout},
 };
-use tracing::{debug, error};
+use tracing::{error, info};
 
 use crate::app::model::{Output, output_line::OutputLine};
 
@@ -45,6 +45,7 @@ impl PlanStepExecution {
 
 #[derive(Debug)]
 pub struct Running {
+    pub original_command: String,
     pub child: Child,
     pub out_stream: Lines<BufReader<ChildStdout>>,
     pub err_stream: Lines<BufReader<ChildStderr>>,
@@ -53,7 +54,7 @@ pub struct Running {
 
 impl Running {
     pub fn kill(&mut self) {
-        debug!(?self, "kill child process");
+        info!(?self.original_command, "kill child process");
         if let Err(err) = self.child.start_kill() {
             error!(?err, "failed to kill child process");
         }

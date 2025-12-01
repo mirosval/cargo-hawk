@@ -52,6 +52,7 @@ impl PlanStep {
                     && let Some(stderr) = child.stderr.take()
                 {
                     self.exec = PlanStepExecution::Running(Box::new(Running {
+                        original_command: self.cmd.to_string(),
                         child,
                         out_stream: BufReader::new(stdout).lines(),
                         err_stream: BufReader::new(stderr).lines(),
