@@ -18,6 +18,9 @@ TUI that listens for file events and runs several programs in sequence (typicall
 - [ ] Parse test outputs
 - [ ] Add examples with warnings, errors, different plans
 - [ ] Add cli args to supply custom plans
+- [ ] Retain previous output when reclculting the current step
+- [ ] Disable auto mode on tab change
+- [ ] Slow down or disable ticking when idle
 
 ## Prior Art
 
