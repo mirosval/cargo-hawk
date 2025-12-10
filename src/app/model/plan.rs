@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_from_string_empty() {
-        let plan = Plan::from_string("");
+        let plan = Plan::from_string("", ".".into());
         assert_eq!(plan.selected_idx, 0);
         assert_eq!(plan.commands.len(), 1);
     }
@@ -203,6 +203,7 @@ mod tests {
             cargo check
             cargo test
             "#,
+            ".".into(),
         );
         assert_eq!(plan.selected_idx, 0);
         assert_eq!(plan.commands.len(), 2);
@@ -219,6 +220,7 @@ mod tests {
             r#"
             echo "Hello"
             "#,
+            ".".into(),
         );
         assert_eq!(plan.selected_idx, 0);
         assert_eq!(plan.commands.len(), 1);
