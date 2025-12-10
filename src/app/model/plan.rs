@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::app::model::{Output, PlanStepExecution, plan_step::PlanStep};
 
 #[derive(Debug, Default)]
@@ -7,7 +9,7 @@ pub struct Plan {
 }
 
 impl Plan {
-    pub fn from_string(s: &str) -> Plan {
+    pub fn from_string(s: &str, working_directory: PathBuf) -> Plan {
         let steps: Vec<PlanStep> = s
             .split("\n")
             .map(|step| step.trim().to_string())
@@ -20,6 +22,7 @@ impl Plan {
                     .to_string();
                 PlanStep {
                     name,
+                    path: working_directory.clone(),
                     cmd: cmd.to_string(),
                     exec: PlanStepExecution::not_run(),
                 }
@@ -31,6 +34,7 @@ impl Plan {
                 commands: vec![PlanStep {
                     name: "Error".to_string(),
                     cmd: "echo 1".to_string(),
+                    path: working_directory,
                     exec: PlanStepExecution::error(
                         "The supplied plan did not contain any commands, please supply a plan in the one command per line format".to_string()
                     ),

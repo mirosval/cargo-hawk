@@ -1,4 +1,4 @@
-use std::{process::Stdio, time::Duration};
+use std::{path::PathBuf, process::Stdio, time::Duration};
 
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -15,6 +15,7 @@ use crate::app::model::{
 pub struct PlanStep {
     pub name: String,
     pub cmd: String,
+    pub path: PathBuf,
     pub exec: PlanStepExecution,
 }
 
@@ -41,6 +42,7 @@ impl PlanStep {
 
         let child = Command::new(&program)
             .args(&args)
+            .current_dir(&self.path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -91,6 +91,7 @@ fn setup_file_watcher(
 pub struct App {
     event_rx: UnboundedReceiver<AppEvent>,
     event_tx: UnboundedSender<AppEvent>,
+    working_directory: PathBuf,
     _file_watcher: FileWatcher,
     plan: Plan,
     scroll_offset: u16,
@@ -106,6 +107,7 @@ impl App {
             r#"cargo check
             cargo test
             cargo clippy"#,
+            args.path.clone(),
         );
 
         // TODO: Decouple this
@@ -114,6 +116,7 @@ impl App {
         Ok(Self {
             event_rx,
             event_tx,
+            working_directory: args.path.clone(),
             _file_watcher: file_watcher,
             plan,
             scroll_offset: 0,
@@ -273,7 +276,7 @@ impl App {
 
         let edited_plan = edit::edit(self.plan.as_text().trim()).unwrap();
 
-        self.plan = Plan::from_string(&edited_plan);
+        self.plan = Plan::from_string(&edited_plan, self.working_directory.clone());
 
         self.start_command();
 

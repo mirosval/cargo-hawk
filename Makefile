@@ -13,6 +13,10 @@ print-%  : ; @echo $*=$($*)
 dev:
 	RUST_LOG=debug cargo run hawk --log-file $(LOG_FILE)
 
+.PHONY: dev-failure
+dev-failure:
+	RUST_LOG=debug cargo run hawk --log-file $(LOG_FILE) --path examples/test_failure
+
 .PHONY: tail
 tail:
 	tspin $(LOG_FILE) -f
