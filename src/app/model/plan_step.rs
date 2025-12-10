@@ -1,14 +1,14 @@
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{mem::swap, path::PathBuf, process::Stdio, time::Duration};
 
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
     time::Instant,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::app::model::{
-    Output, PlanStepExecution, output_line::OutputLine, plan_step_execution::Running,
+    Output, Plan, PlanStepExecution, output_line::OutputLine, plan_step_execution::Running,
 };
 
 #[derive(Debug)]
@@ -17,11 +17,16 @@ pub struct PlanStep {
     pub cmd: String,
     pub path: PathBuf,
     pub exec: PlanStepExecution,
+    pub previous_exec: Option<PlanStepExecution>,
 }
 
 impl PlanStep {
     pub fn start(&mut self) {
         info!(?self.cmd, "start command");
+
+        // Move current execution (if any) into previous_exec
+        self.move_exec_to_previous();
+
         // Parse the command string into program and args
         let parts: Vec<String> = self.cmd.split_whitespace().map(|s| s.to_string()).collect();
 
@@ -163,7 +168,12 @@ impl PlanStep {
     pub fn output(&self) -> &Output {
         match &self.exec {
             PlanStepExecution::NotRun { output } => output,
-            PlanStepExecution::Running(running) => &running.partial_output,
+            PlanStepExecution::Running(running) => self
+                .previous_exec
+                .as_ref()
+                .and_then(|pe| pe.maybe_output())
+                .unwrap_or(&running.partial_output),
+            //&running.partial_output,
             PlanStepExecution::Error { output } => output,
             PlanStepExecution::Warning { output, .. } => output,
             PlanStepExecution::Failure { output, .. } => output,
@@ -175,7 +185,22 @@ impl PlanStep {
         if let PlanStepExecution::Running(running) = &mut self.exec {
             running.kill();
         }
-        self.exec = PlanStepExecution::not_run();
+        self.move_exec_to_previous();
+    }
+
+    fn move_exec_to_previous(&mut self) {
+        match self.exec {
+            PlanStepExecution::NotRun { .. } | PlanStepExecution::Running(_) => {}
+            PlanStepExecution::Error { .. }
+            | PlanStepExecution::Warning { .. }
+            | PlanStepExecution::Failure { .. }
+            | PlanStepExecution::Success { .. } => {
+                debug!("moving into previous_exec");
+                let mut exec = PlanStepExecution::not_run();
+                swap(&mut self.exec, &mut exec);
+                self.previous_exec = Some(exec);
+            }
+        }
     }
 
     pub fn has_been_started(&self) -> bool {

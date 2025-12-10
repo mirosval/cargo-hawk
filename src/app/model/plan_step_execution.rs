@@ -30,6 +30,17 @@ pub enum PlanStepExecution {
 }
 
 impl PlanStepExecution {
+    pub fn maybe_output(&self) -> Option<&Output> {
+        match &self {
+            PlanStepExecution::NotRun { output: _ } => None,
+            PlanStepExecution::Running(_) => None,
+            PlanStepExecution::Error { output } => Some(output),
+            PlanStepExecution::Warning { output, .. } => Some(output),
+            PlanStepExecution::Failure { output, .. } => Some(output),
+            PlanStepExecution::Success { output } => Some(output),
+        }
+    }
+
     pub fn not_run() -> Self {
         PlanStepExecution::NotRun {
             output: Output::from_line(OutputLine::Other("Not started".to_string())),
@@ -54,7 +65,7 @@ pub struct Running {
 
 impl Running {
     pub fn kill(&mut self) {
-        info!(?self.original_command, "kill child process");
+        info!("kill child process");
         if let Err(err) = self.child.start_kill() {
             error!(?err, "failed to kill child process");
         }

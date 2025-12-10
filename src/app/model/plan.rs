@@ -25,6 +25,7 @@ impl Plan {
                     path: working_directory.clone(),
                     cmd: cmd.to_string(),
                     exec: PlanStepExecution::not_run(),
+                    previous_exec: None,
                 }
             })
             .collect();
@@ -38,6 +39,7 @@ impl Plan {
                     exec: PlanStepExecution::error(
                         "The supplied plan did not contain any commands, please supply a plan in the one command per line format".to_string()
                     ),
+                    previous_exec: None
                 }],
             }
         } else {
