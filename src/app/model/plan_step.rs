@@ -8,7 +8,7 @@ use tokio::{
 use tracing::{debug, error, info};
 
 use crate::app::model::{
-    Output, Plan, PlanStepExecution, output_line::OutputLine, plan_step_execution::Running,
+    Output, PlanStepExecution, output_line::OutputLine, plan_step_execution::Running,
 };
 
 #[derive(Debug)]
